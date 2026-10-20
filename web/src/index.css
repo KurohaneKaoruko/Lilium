@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #17181c;
+  --color-panel: #1e2026;
+  --color-panel2: #24262d;
+  --color-border: #33363f;
+  --color-accent: #a78bfa;
+  --color-accent2: #7c5cff;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  @apply bg-bg text-neutral-200 text-sm antialiased;
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { scrollbar-width: thin; scrollbar-color: #444 transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #3f424c; border-radius: 4px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+@layer utilities {
+  .btn {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs
+      hover:bg-white/10 active:bg-white/15 transition-colors cursor-pointer select-none;
+  }
+  .btn-primary {
+    @apply bg-accent2 text-white hover:bg-violet-500 px-3 py-1.5 rounded-md text-xs
+      inline-flex items-center gap-1.5 transition-colors cursor-pointer;
+  }
+  .input {
+    @apply bg-panel2 border border-border rounded-md px-2.5 py-1.5 text-xs outline-none
+      focus:border-accent transition-colors;
+  }
+  .panel { @apply bg-panel border-border; }
+}
+
+.no-select { user-select: none; -webkit-user-select: none; }
+
+@keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+.fade-in { animation: fadeIn .15s ease-out; }
+
+@keyframes popIn { from { opacity: 0; transform: scale(.96) } to { opacity: 1; transform: scale(1) } }
+.pop-in { animation: popIn .12s ease-out; }

@@ -1,0 +1,16 @@
+services:
+  lilium:
+    build: .
+    image: lilium:latest
+    container_name: lilium
+    restart: unless-stopped
+    ports:
+      - "7333:7333"
+    volumes:
+      - lilium-data:/data
+      # 可选：把宿主机图片目录挂进来，便于从磁盘路径导入
+      # - /home/me/Pictures:/import:ro
+    environment:
+      - TZ=Asia/Shanghai
+volumes:
+  lilium-data:

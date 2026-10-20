@@ -1,0 +1,23 @@
+[package]
+name = "lilium-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true }
+image = { workspace = true }
+uuid = { workspace = true }
+kamadak-exif = "0.6"
+mime_guess = "2"
+sha1 = "0.10"
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+dirs = "5"
+futures = "0.3"
+walkdir = "2"
+thiserror = "2"
+open = "5"
