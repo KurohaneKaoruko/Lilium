@@ -80,6 +80,7 @@ export default function App() {
       if (e.key === "2") st.setView("grid");
       if (e.key === "3") st.setView("list");
       if (e.key === "4") st.setView("infinite");
+      if (e.key === "5") st.setView("collections");
       if (e.key === "?") setModal("shortcuts");
     };
     window.addEventListener("keydown", h);
@@ -124,25 +125,36 @@ export default function App() {
     <div className="h-full flex flex-col">
       <div className="flex-1 flex min-h-0">
         <main className="flex-1 flex min-w-0 relative">
-          {similarIds && (
-            <div className="absolute top-11 inset-x-0 z-20 h-9 bg-amber-500/15 backdrop-blur border-b border-amber-500/20 flex items-center gap-2 px-3 text-xs text-amber-300">
-              <Wand2 size={13} />
-              相似图片结果 · {similarIds.length} 张
-              <button className="btn ml-auto" onClick={exitSimilar}>返回</button>
-            </div>
-          )}
-          {/* 经典排列视图:视口从固定顶栏下方开始,共享同一套悬浮 chrome */}
-          <div className="flex-1 flex min-w-0 relative pt-11">
+          {/* 经典排列视图:视口从固定顶栏下方开始,并为左栏让位(同曲线过渡,不被遮挡) */}
+          <div
+            className="flex-1 flex min-w-0 relative pt-11"
+            style={{
+              marginLeft: chromeLeft ? 224 : 48,
+              transition: "margin-left 340ms cubic-bezier(.22,1,.36,1)",
+            }}
+          >
             {view === "masonry" && <MasonryView />}
             {view === "grid" && <GridView />}
             {view === "list" && <ListView />}
             {view === "collections" && <CollectionsView />}
           </div>
           {view === "infinite" && <InfiniteView />}
+          {similarIds && (
+            <div
+              className="absolute top-11 right-0 z-20 h-9 bg-amber-500/15 backdrop-blur border-b border-amber-500/20 flex items-center gap-2 px-3 text-xs text-amber-300"
+              style={{
+                left: chromeLeft ? 224 : 48,
+                transition: "left 340ms cubic-bezier(.22,1,.36,1)",
+              }}
+            >
+              <Wand2 size={13} />
+              相似图片结果 · {similarIds.length} 张
+              <button className="btn ml-auto" onClick={exitSimilar}>返回</button>
+            </div>
+          )}
           <SelectionBar />
         </main>
       </div>
-      {/* 全视图统一的悬浮工作台:顶栏(含窗口钮) + 左栏,差别只在内容排布 */}
       <FloatingChrome>
         {(mode) =>
           mode === "top" ? (

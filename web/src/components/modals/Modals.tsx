@@ -193,7 +193,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
     ["Ctrl+F", "聚焦搜索框"],
     ["Ctrl+A", "全选"],
-    ["1 / 2 / 3 / 4", "切换 瀑布流 / 网格 / 列表 / 无限视图"],
+    ["1 / 2 / 3 / 4 / 5", "切换 瀑布流 / 网格 / 列表 / 无限视图 / 分类墙"],
     ["← → ↑ ↓", "在灯箱中切换图片"],
     ["Enter", "打开大图预览"],
     ["Esc", "关闭弹窗 / 收起左栏 / 取消选择"],

@@ -32,9 +32,9 @@ export default function InfiniteView() {
   const setLightbox = useStore((s) => s.setLightbox);
   const setView = useStore((s) => s.setView);
 
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: 1440, h: 900 });
+  const [size, setSize] = useState({ w: 0, h: 0 });
 
   // 相机状态用 ref(每帧直写 DOM,不走 React 状态 —— 与手势同频,零重渲染)
   const cam = useRef({ tx: 0, ty: 0, z: 1 });
@@ -190,14 +190,13 @@ export default function InfiniteView() {
     [size, startCamAnim],
   );
 
-  // 视口尺寸
-  useEffect(() => {
-    const el = containerRef.current;
+  // 视口尺寸:容器挂载即观察(items 未就绪时组件早退占位,容器此时才真正出现)
+  const attachContainer = useCallback((el: HTMLDivElement | null) => {
+    containerRef.current = el;
     if (!el) return;
     const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
     ro.observe(el);
     setSize({ w: el.clientWidth, h: el.clientHeight });
-    return () => ro.disconnect();
   }, []);
 
   // 布局引擎实例
@@ -243,10 +242,10 @@ export default function InfiniteView() {
     [layout, glideTo, beginReflow],
   );
 
-  // 首帧:按视口定缩放,把原点块放到中心
+  // 首帧:按视口定缩放,把原点块放到中心(视口测量就绪即定位,不等 items)
   const didCenterRef = useRef(false);
   useEffect(() => {
-    if (didCenterRef.current || size.w < 100 || !containerRef.current) return;
+    if (didCenterRef.current || size.w < 100) return;
     didCenterRef.current = true;
     const z0 = Math.min(1.6, Math.max(0.5, size.h / 1000));
     cam.current.z = z0;
@@ -428,7 +427,7 @@ export default function InfiniteView() {
   return (
     <div className="relative flex-1 overflow-hidden bg-[#0a0b0f] no-select">
       <div
-        ref={containerRef}
+        ref={attachContainer}
         className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing overflow-hidden"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
