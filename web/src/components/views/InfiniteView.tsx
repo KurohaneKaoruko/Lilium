@@ -457,6 +457,7 @@ export default function InfiniteView() {
                 onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
               >
                 <div
+                  data-picked={isPicked ? "1" : "0"}
                   className={`absolute inset-0 overflow-hidden pointer-events-auto tile-wrap ${isPicked ? "!cursor-default" : ""}`}
                   style={{
                     transition: picked

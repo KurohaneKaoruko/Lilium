@@ -48,7 +48,7 @@ body {
   transition: transform 160ms cubic-bezier(.22, 1, .36, 1);
   will-change: transform;
 }
-.tile-outer:hover { transform: scale(1.035); }
+.tile-outer:hover:not(:has(.tile-wrap[data-picked="1"])) { transform: scale(1.035); }
 .tile-wrap { cursor: pointer; }
 
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
