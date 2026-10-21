@@ -129,7 +129,7 @@ const KINDS: { key: string; label: string }[] = [
 
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899"];
 
-export default function Sidebar({ immersive = false }: { immersive?: boolean }) {
+export default function Sidebar({ immersive = false, collapsed = false }: { immersive?: boolean; collapsed?: boolean }) {
   const info = useStore((s) => s.info);
   const folders = useStore((s) => s.folders);
   const tags = useStore((s) => s.tags);
@@ -174,9 +174,14 @@ export default function Sidebar({ immersive = false }: { immersive?: boolean }) 
 
   return (
     <aside
-      className={`flex flex-col overflow-y-auto overflow-x-hidden ${
-        immersive ? "w-56 h-full bg-transparent" : "w-56 shrink-0 bg-panel border-r border-border"
+      className={`flex flex-col overflow-hidden overflow-y-auto ${
+        immersive ? "h-full bg-panel/85 backdrop-blur-md border-r border-border/60" : "w-56 shrink-0 bg-panel border-r border-border"
       }`}
+      style={{
+        width: immersive ? (collapsed ? 48 : 224) : undefined,
+        transition: immersive ? "width 340ms cubic-bezier(.22,1,.36,1)" : undefined,
+        boxShadow: immersive ? "8px 0 24px rgba(0,0,0,.25)" : undefined,
+      }}
     >
       {/* 库信息 */}
       <div className="px-3 py-3 border-b border-border min-w-[224px]">

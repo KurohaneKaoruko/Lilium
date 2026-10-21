@@ -147,7 +147,7 @@ export default function App() {
             mode === "top" ? (
               <TopBar immersive onImported={() => setToast("导入完成")} />
             ) : (
-              <Sidebar immersive />
+              <Sidebar immersive collapsed={!chromeLeft} />
             )
           }
         </FloatingChrome>
@@ -203,7 +203,7 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           <WindowControls />
         </div>
       </div>
-      {/* 左栏:一个 box,48 ⇄ 224,悬停张开 */}
+      {/* 左栏:一个 box,48 ⇄ 224,悬停张开;宽度过渡直接由 Sidebar 自己承担 */}
       <div
         data-chrome-left
         onPointerEnter={() => {
@@ -211,12 +211,7 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           setChromeLeft(true);
         }}
         onPointerLeave={release}
-        className="absolute left-0 top-0 bottom-0 z-30 overflow-hidden bg-panel/85 backdrop-blur-md border-r border-border/60"
-        style={{
-          width: chromeLeft ? 224 : 48,
-          transition: "width 340ms cubic-bezier(.22,1,.36,1)",
-          boxShadow: "8px 0 24px rgba(0,0,0,.25)",
-        }}
+        className="absolute left-0 top-0 bottom-0 z-30"
       >
         {children("left")}
       </div>
