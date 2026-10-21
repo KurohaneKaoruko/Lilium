@@ -174,7 +174,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
 
   return (
     <aside
-      className={`flex flex-col overflow-hidden overflow-y-auto ${
+      className={`flex flex-col overflow-y-auto overflow-x-hidden ${
         immersive ? "h-full pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60" : "w-56 shrink-0 bg-panel border-r border-border"
       }`}
       style={{
@@ -198,39 +198,21 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         </div>
       )}
 
-      {/* 快速入口 */}
-      <div className={`py-2 border-b border-border ${collapsed ? "flex flex-col items-center gap-1" : "px-2 space-y-0.5 min-w-[224px]"}`}>
-        <SideBtn collapsed={collapsed} active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={16} />} label="全部图片" />
-        <SideBtn collapsed={collapsed} active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={16} />} label="未分类" />
-        <SideBtn collapsed={collapsed} active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={16} />} label="未加标签" />
-        <SideBtn collapsed={collapsed} active={filters.trash} onClick={() => setFilters({ trash: !filters.trash, folderId: null, smartId: null })} icon={<Trash2 size={16} />} label="回收站" />
-      </div>
+      {/* 固定 224px 内层列:宽度过渡期间内容零重排,aside 只做裁剪 */}
+      <div className="w-56 shrink-0">
+        {/* 快速入口:始终可见,图标左对齐(收/展位置一致,不跳动) */}
+        <div className="px-2 py-2 space-y-0.5 border-b border-border">
+          <SideBtn collapsed={collapsed} active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={16} />} label="全部图片" />
+          <SideBtn collapsed={collapsed} active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={16} />} label="未分类" />
+          <SideBtn collapsed={collapsed} active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={16} />} label="未加标签" />
+          <SideBtn collapsed={collapsed} active={filters.trash} onClick={() => setFilters({ trash: !filters.trash, folderId: null, smartId: null })} icon={<Trash2 size={16} />} label="回收站" />
+        </div>
 
-      {collapsed ? (
-        <>
-          {/* 窄态:文件夹只显示根级图标 */}
-          <div className="py-2 border-b border-border flex flex-col items-center gap-1">
-            {tree.slice(0, 6).map((n) => (
-              <button
-                key={n.id}
-                title={n.name}
-                className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-                  filters.folderId === n.id
-                    ? "bg-violet-500/25 text-violet-200"
-                    : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
-                }`}
-                onClick={() => setFilters({ folderId: n.id, trash: false, smartId: null })}
-              >
-                <FolderIcon size={16} />
-              </button>
-            ))}
-          </div>
-          <div className="mt-auto py-2 flex justify-center text-[10px] text-neutral-600 border-t border-border w-full">
-            Lilium
-          </div>
-        </>
-      ) : (
-        <>
+        {/* 其余分区:收起时整体淡出(不卸载,不换 DOM),展开原位恢复 */}
+        <div
+          className={collapsed ? "opacity-0 pointer-events-none" : "opacity-100"}
+          style={{ transition: "opacity 160ms ease" }}
+        >
           {/* 文件夹 */}
           <Section title="文件夹" action={<button className="btn !p-1" onClick={newFolder} title="新建文件夹"><FolderPlus size={13} /></button>}>
             <div className="px-1">
@@ -349,8 +331,8 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
           <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border whitespace-nowrap overflow-hidden">
             Lilium · 本地优先的图片管理
           </div>
-        </>
-      )}
+        </div>
+      </div>
     </aside>
   );
 }
@@ -358,7 +340,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
 function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className="border-b border-border py-2 min-w-[224px]">
+    <div className="border-b border-border py-2">
       <div className="flex items-center justify-between px-3 mb-1">
         <button className="text-[10px] font-medium tracking-wider text-neutral-500 uppercase hover:text-neutral-300" onClick={() => setCollapsed(!collapsed)}>
           {title}
@@ -371,29 +353,18 @@ function Section({ title, action, children }: { title: string; action?: React.Re
 }
 
 function SideBtn({ active, onClick, icon, label, collapsed = false }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; collapsed?: boolean }) {
-  if (collapsed) {
-    return (
-      <button
-        title={label}
-        className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-          active ? "bg-violet-500/25 text-violet-200" : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
-        }`}
-        onClick={onClick}
-      >
-        {icon}
-      </button>
-    );
-  }
+  // 同一 DOM 两种状态:图标钉在 px-2 的固定位置(收/展零位移),
+  // 收起时按钮缩为图标钮、文字淡出,宽度由 aside 裁剪。
   return (
     <button
-      className={`w-full flex items-center gap-2 rounded-md px-2 py-[6px] text-xs transition-colors ${
-        active ? "bg-violet-500/15 text-violet-300" : "text-neutral-300 hover:bg-white/5"
-      }`}
-      onClick={onClick}
       title={label}
+      className={`flex items-center rounded-md text-xs transition-colors ${
+        collapsed ? "w-8 h-8 justify-center" : "w-full gap-2 px-2 py-[6px]"
+      } ${active ? "bg-violet-500/15 text-violet-300" : "text-neutral-300 hover:bg-white/5"}`}
+      onClick={onClick}
     >
-      <span className="shrink-0">{icon}</span>
-      <span className="truncate">{label}</span>
+      <span className="shrink-0 w-4 flex justify-center">{icon}</span>
+      {!collapsed && <span className="truncate">{label}</span>}
     </button>
   );
 }
