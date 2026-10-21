@@ -353,13 +353,13 @@ function Section({ title, action, children }: { title: string; action?: React.Re
 }
 
 function SideBtn({ active, onClick, icon, label, collapsed = false }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; collapsed?: boolean }) {
-  // 同一 DOM 两种状态:图标钉在 px-2 的固定位置(收/展零位移),
-  // 收起时按钮缩为图标钮、文字淡出,宽度由 aside 裁剪。
+  // 同一 DOM 两种状态:高度恒定 h-7(28px),行距 space-y-0.5 不变 → 收/展零位移;
+  // 图标中心:展开 = px-2(8) + w-4/2(8),收起 = w-8 居中(16),在容器 px-2 下同为 cx=24。
   return (
     <button
       title={label}
-      className={`flex items-center rounded-md text-xs transition-colors ${
-        collapsed ? "w-8 h-8 justify-center" : "w-full gap-2 px-2 py-[6px]"
+      className={`flex items-center h-7 rounded-md text-xs transition-colors ${
+        collapsed ? "w-8 justify-center" : "w-full gap-2 px-2"
       } ${active ? "bg-violet-500/15 text-violet-300" : "text-neutral-300 hover:bg-white/5"}`}
       onClick={onClick}
     >
