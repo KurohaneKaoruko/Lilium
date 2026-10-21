@@ -251,10 +251,13 @@ export default function Sidebar() {
           {[0, 1, 2, 3, 4, 5].map((n) => (
             <button
               key={n}
-              className={`px-1.5 py-0.5 rounded text-[11px] ${filters.ratingMin === n ? "bg-violet-500/25 text-violet-200" : "text-neutral-500 hover:bg-white/5"}`}
+              title={n === 0 ? "全部评分" : `${n} 星及以上`}
+              className={`px-1.5 py-0.5 rounded text-[11px] shrink-0 ${
+                filters.ratingMin === n ? "bg-violet-500/25 text-violet-200" : "text-neutral-500 hover:bg-white/5"
+              }`}
               onClick={() => setFilters({ ratingMin: n })}
             >
-              {n === 0 ? "全部" : `${n}★`}
+              {n === 0 ? "A" : `${n}★`}
             </button>
           ))}
           <Star size={11} className="text-amber-400/60 ml-0.5" />
@@ -308,7 +311,7 @@ export default function Sidebar() {
       </Section>
 
       <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border">
-        Lilium · 兼容 Eagle 库导入
+        Lilium · 本地优先的图片管理
       </div>
     </aside>
   );

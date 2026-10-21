@@ -1,60 +1,179 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, Maximize2, ZoomIn, ZoomOut, Map as MapIcon, X } from "lucide-react";
+import { X } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { itemAspectRatio, thumbUrl } from "../../api/client";
 import { buildMosaic, type MosaicLayout, type WorldTile } from "../../lib/infinite";
 
 /**
- * 无限视图：全部图片拼贴在同一平面，可向任意方向平移、缩放浏览。
- * - 拖拽平移；滚轮缩放（以光标为中心）；Shift+滚轮 垂直平移
- * - 点击选择，Ctrl+点击 多选，Shift+点击 范围选择
- * - 双击打开大图预览
- * - 布局按需惰性生成（环形生长算法），数万张图也流畅
+ * 无限视图（全屏沉浸画布）：封面墙铺满整个屏幕。
+ *
+ * - 全屏接管：顶栏/侧栏/详情面板隐藏，Esc 或左上角按钮退出
+ * - 瓦片按纵横比完整显示整张图片，素材循环取模，任何方向都密铺到底
+ * - 画布式交互：滚轮平移（Shift+滚轮横向）、Ctrl+滚轮缩放、拖拽自由平移，不锁定镜头
+ * - 单击瓦片：该图放大强调（白描边 + 投影），再点一次还原；双击打开大图
+ * - ←/→ 步进放大目标（仅在目标不可见时才平移镜头）
  */
 export default function InfiniteView() {
   const items = useStore((s) => s.items);
-  const zoom = useStore((s) => s.zoom);
   const selection = useStore((s) => s.selection);
   const select = useStore((s) => s.select);
   const setLightbox = useStore((s) => s.setLightbox);
-  const setDetail = useStore((s) => s.setDetail);
+  const setView = useStore((s) => s.setView);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: 1200, h: 800 });
+  const [size, setSize] = useState({ w: 1440, h: 900 });
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
-  const [z, setZ] = useState(0.62);
+  const [z, setZ] = useState(1);
+  /** 当前放大强调的卡片 id */
+  const [pickedId, setPickedId] = useState<string | null>(null);
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
-  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const marqueeStart = useRef<{ x: number; y: number } | null>(null);
-  const [showMinimap, setShowMinimap] = useState(false);
+  const rafRef = useRef<number | null>(null);
+  const pendingPan = useRef<{ tx: number; ty: number } | null>(null);
+  /** 镜头平滑动画 */
+  const animRef = useRef<number | null>(null);
+  /** 防止双击时第二次单击把刚放大的图还原 */
+  const lastClick = useRef<{ id: string; t: number } | null>(null);
+
+  // 量取视口尺寸
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setSize({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
 
   const layout: MosaicLayout = useMemo(
     () => buildMosaic(items.map((it) => ({ id: it.id, aspect: itemAspectRatio(it) }))),
     [items],
   );
 
+  /** 步进顺序 = items 顺序 */
+  const orderedIds = useMemo(() => items.map((i) => i.id), [items]);
+
+  /** 把世界坐标 (wx,wy) 平滑移到屏幕中心 */
+  const glideTo = useCallback(
+    (wx: number, wy: number) => {
+      if (animRef.current !== null) cancelAnimationFrame(animRef.current);
+      const startTx = tx;
+      const startTy = ty;
+      const endTx = size.w / 2 - wx * z;
+      const endTy = size.h / 2 - wy * z;
+      const t0 = performance.now();
+      const dur = 550;
+      const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+      const step = (now: number) => {
+        const p = Math.min(1, (now - t0) / dur);
+        const e = ease(p);
+        setTx(startTx + (endTx - startTx) * e);
+        setTy(startTy + (endTy - startTy) * e);
+        if (p < 1) animRef.current = requestAnimationFrame(step);
+        else animRef.current = null;
+      };
+      animRef.current = requestAnimationFrame(step);
+    },
+    [tx, ty, z, size],
+  );
+
+  /** 放大某张卡片。单击场景绝不移动镜头；步进场景仅当目标与视口交叠 <25% 时才平移带过来 */
+  const pickTile = useCallback(
+    (id: string, opts?: { step?: boolean }) => {
+      setPickedId(id);
+      if (!opts?.step) return;
+      const tile = layout.allTiles().find((t) => t.id === id);
+      if (!tile) return;
+      const sx = tile.x * z + tx;
+      const sy = tile.y * z + ty;
+      const sw = tile.w * z;
+      const sh = tile.h * z;
+      const ix = Math.max(0, Math.min(sx + sw, size.w) - Math.max(sx, 0));
+      const iy = Math.max(0, Math.min(sy + sh, size.h) - Math.max(sy, 0));
+      if (sw * sh > 0 && (ix * iy) / (sw * sh) < 0.25) {
+        glideTo(tile.x + tile.w / 2, tile.y + tile.h / 2);
+      }
+    },
+    [layout, glideTo, z, tx, ty, size],
+  );
+
+  /** 下一个放大目标（items 顺序，循环） */
+  const stepPick = useCallback(
+    (dir: 1 | -1) => {
+      if (orderedIds.length === 0) return;
+      let idx = pickedId ? orderedIds.indexOf(pickedId) : -1;
+      idx = (idx + dir + orderedIds.length) % orderedIds.length;
+      pickTile(orderedIds[idx], { step: true });
+    },
+    [orderedIds, pickedId, pickTile],
+  );
+
+  // 首帧：画布基准缩放（按视口高度定密度），并把第一张放到中心，不做动画
+  const didCenterRef = useRef(false);
   useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      setSize({ w: el.clientWidth, h: el.clientHeight });
-    });
-    ro.observe(el);
-    setSize({ w: el.clientWidth, h: el.clientHeight });
-    // 初始定位到原点附近
-    setTx(el.clientWidth / 2);
-    setTy(el.clientHeight / 2);
-    return () => ro.disconnect();
-  }, []);
+    if (didCenterRef.current || size.w < 100 || !containerRef.current) return;
+    const first = items[0];
+    if (!first) return;
+    const tile = layout.allTiles().find((t) => t.id === first.id);
+    if (!tile) return;
+    didCenterRef.current = true;
+    const z0 = Math.min(1.8, Math.max(0.55, size.h / 1150));
+    setZ(z0);
+    setTx(size.w / 2 - (tile.x + tile.w / 2) * z0);
+    setTy(size.h / 2 - (tile.y + tile.h / 2) * z0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size, layout]);
 
-  // 世界→屏幕
-  const sx = (wx: number) => wx * z + tx;
-  const sy = (wy: number) => wy * z + ty;
+  // 可见区域瓦片
+  const tiles: WorldTile[] = useMemo(() => {
+    const worldX0 = (0 - tx) / z;
+    const worldY0 = (0 - ty) / z;
+    const worldX1 = (size.w - tx) / z;
+    const worldY1 = (size.h - ty) / z;
+    return layout.ensureCover({ x0: worldX0, y0: worldY0, x1: worldX1, y1: worldY1 });
+  }, [layout, tx, ty, z, size]);
 
-  // 平移时用 rAF 节流，避免高频 setState
-  const rafRef = useRef<number | null>(null);
-  const pendingPan = useRef<{ tx: number; ty: number } | null>(null);
+  // 素材循环复用后同一 id 可能出现多个实例：放大"距屏幕中心最近"的那个
+  const nearestPickedTile: WorldTile | null = useMemo(() => {
+    if (!pickedId) return null;
+    const cx = (size.w / 2 - tx) / z;
+    const cy = (size.h / 2 - ty) / z;
+    let best: WorldTile | null = null;
+    let bd = Infinity;
+    const consider = (t: WorldTile) => {
+      if (t.id !== pickedId) return;
+      const dx = t.x + t.w / 2 - cx;
+      const dy = t.y + t.h / 2 - cy;
+      const d = dx * dx + dy * dy;
+      if (d < bd) {
+        bd = d;
+        best = t;
+      }
+    };
+    for (const t of tiles) consider(t);
+    // 完全不在视野时，回退到全局最近实例（保证 ←/→ 步进有落点）
+    if (!best) for (const t of layout.allTiles()) consider(t);
+    return best;
+  }, [tiles, layout, pickedId, tx, ty, z, size]);
+
+  // 键盘：←/→ 步进放大目标，Esc 退出
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (useStore.getState().lightboxId) return;
+      if (e.key === "ArrowRight") {
+        e.preventDefault();
+        stepPick(1);
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        stepPick(-1);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [stepPick]);
+
   const schedulePan = (nextTx: number, nextTy: number) => {
     pendingPan.current = { tx: nextTx, ty: nextTy };
     if (rafRef.current === null) {
@@ -69,31 +188,19 @@ export default function InfiniteView() {
     }
   };
 
-  const tiles: WorldTile[] = useMemo(() => {
-    const worldX0 = (0 - tx) / z;
-    const worldY0 = (0 - ty) / z;
-    const worldX1 = (size.w - tx) / z;
-    const worldY1 = (size.h - ty) / z;
-    return layout.ensureCover({ x0: worldX0, y0: worldY0, x1: worldX1, y1: worldY1 });
-  }, [layout, tx, ty, z, size]);
-
-  // ID→条目映射（替代列表里的 O(n) find）
-  const itemById = useMemo(() => {
-    const m = new Map<string, (typeof items)[number]>();
-    for (const it of items) m.set(it.id, it);
-    return m;
-  }, [items]);
-
-  // ---- 交互 ----
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    if (e.shiftKey) {
-      marqueeStart.current = { x: e.clientX, y: e.clientY };
-      setMarquee({ x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY });
-    } else {
-      dragRef.current = { x: e.clientX, y: e.clientY, tx, ty, moved: false };
+    if (animRef.current !== null) {
+      cancelAnimationFrame(animRef.current);
+      animRef.current = null;
     }
+    // 捕获指针：拖到窗口外/快速移动也不丢事件
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    dragRef.current = { x: e.clientX, y: e.clientY, tx, ty, moved: false };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -103,133 +210,71 @@ export default function InfiniteView() {
       const dy = e.clientY - d.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
       schedulePan(d.tx + dx, d.ty + dy);
-      return;
-    }
-    const m = marqueeStart.current;
-    if (m) {
-      setMarquee((prev) => (prev ? { ...prev, x1: e.clientX, y1: e.clientY } : prev));
     }
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
-    const m = marqueeStart.current;
-    marqueeStart.current = null;
-    if (m && marquee) {
-      // 框选：转换为世界坐标命中
-      const wx0 = (Math.min(marquee.x0, marquee.x1) - tx) / z;
-      const wx1 = (Math.max(marquee.x0, marquee.x1) - tx) / z;
-      const wy0 = (Math.min(marquee.y0, marquee.y1) - ty) / z;
-      const wy1 = (Math.max(marquee.y0, marquee.y1) - ty) / z;
-      const hits = layout
-        .allTiles()
-        .filter((t) => t.x < wx1 && t.x + t.w > wx0 && t.y < wy1 && t.y + t.h > wy0)
-        .map((t) => t.id);
-      const next = new Set(useStore.getState().selection);
-      for (const id of hits) next.add(id);
-      useStore.setState({ selection: next });
-      setMarquee(null);
-      return;
-    }
-    if (d && !d.moved) {
-      const target = e.target as HTMLElement;
-      const tileId = target.closest("[data-tile]")?.getAttribute("data-tile");
-      if (tileId) {
-        if (e.ctrlKey || e.metaKey) select(tileId, "toggle");
-        else if (e.shiftKey) select(tileId, "range");
-        else select(tileId, "set");
-        setDetail(tileId);
-      } else {
-        useStore.getState().clearSelection();
+    if (!d) return;
+    // 自由平移：不吸附、不回弹
+    if (!d.moved) {
+      // 单击：命中检测
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
+      const id = tileEl?.dataset.tile;
+      if (id) {
+        if (e.shiftKey) select(id, "range");
+        else if (e.ctrlKey || e.metaKey) select(id, "toggle");
+        else {
+          // 双击的第二次点击不再还原，交给 dblclick 打开大图
+          const prev = lastClick.current;
+          const rapid = prev && prev.id === id && Date.now() - prev.t < 350;
+          lastClick.current = { id, t: Date.now() };
+          if (!rapid) {
+            if (id === pickedId) setPickedId(null);
+            else pickTile(id);
+          }
+        }
       }
     }
   };
 
+  const onWheel = (e: React.WheelEvent) => {
+    // 画布式：滚轮 = 平移（shift+滚轮横向），Ctrl+滚轮 = 缩放
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const f = Math.exp(-e.deltaY * 0.0022);
+      setZ((old) => Math.min(3, Math.max(0.3, old * f)));
+      return;
+    }
+    const dx = e.shiftKey ? e.deltaY : e.deltaX;
+    const dy = e.shiftKey ? e.deltaX : e.deltaY;
+    if (dx) schedulePan(tx - dx, ty);
+    if (dy) schedulePan(tx, ty - dy);
+  };
+
+  // 双击打开灯箱
   const onTileDoubleClick = (e: React.MouseEvent, id: string) => {
-    e.preventDefault();
+    e.stopPropagation();
+    select(id, "set");
     setLightbox(id);
   };
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
-      e.preventDefault();
-      const rect = containerRef.current!.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      if (e.ctrlKey || e.metaKey || !e.shiftKey) {
-        // 缩放
-        const factor = Math.exp(-e.deltaY * 0.0016);
-        const nz = Math.max(0.12, Math.min(3.2, z * factor));
-        const k = nz / z;
-        setTx(mx - (mx - tx) * k);
-        setTy(my - (my - ty) * k);
-        setZ(nz);
-      } else {
-        setTy(ty - e.deltaY);
-      }
-    },
-    [z, tx, ty],
-  );
-
-  // 方向键平移（灯箱打开时让位给切换图片）
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (useStore.getState().lightboxId) return;
-      const step = 80;
-      if (e.key === "ArrowLeft") setTx((t) => t + step);
-      else if (e.key === "ArrowRight") setTx((t) => t - step);
-      else if (e.key === "ArrowUp") setTy((t) => t + step);
-      else if (e.key === "ArrowDown") setTy((t) => t - step);
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, []);
-
-  const recenter = () => {
-    setTx(size.w / 2);
-    setTy(size.h / 2);
-    setZ(0.62);
-  };
-
-  const zoomBy = (f: number) => {
-    const nz = Math.max(0.12, Math.min(3.2, z * f));
-    const k = nz / z;
-    setTx(size.w / 2 - (size.w / 2 - tx) * k);
-    setTy(size.h / 2 - (size.h / 2 - ty) * k);
-    setZ(nz);
-  };
-
-  // 空状态
   if (items.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-neutral-500">
-        <div className="text-center">
-          <Maximize2 className="mx-auto mb-3 text-neutral-600" size={40} />
-          <p>没有图片 —— 导入一些图片来体验无限视图</p>
-        </div>
+      <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm bg-[#0a0b0f]">
+        没有可显示的图片
       </div>
     );
   }
 
   return (
-    <div className="relative flex-1 overflow-hidden bg-[#141519] no-select">
-      {/* 点阵背景 */}
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage: "radial-gradient(circle, #2a2c33 1px, transparent 1px)",
-          backgroundSize: `${44 * z}px ${44 * z}px`,
-          backgroundPosition: `${tx}px ${ty}px`,
-        }}
-      />
-
+    <div className="relative flex-1 overflow-hidden bg-[#0a0b0f] no-select">
+      {/* 画布：图片密铺填满整屏 */}
       <div
         ref={containerRef}
-        className="absolute inset-0 touch-none"
-        style={{ cursor: dragRef.current ? "grabbing" : "grab" }}
+        className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -237,180 +282,64 @@ export default function InfiniteView() {
         onWheel={onWheel}
       >
         {tiles.map((t) => {
+          const picked = t === nearestPickedTile;
           const selected = selection.has(t.id);
+          const key = `${t.id}#${Math.round(t.x)}x${Math.round(t.y)}`;
           return (
             <div
-              key={t.id}
+              key={key}
               data-tile={t.id}
-              className="absolute overflow-hidden rounded-[3px]"
+              className="absolute"
               style={{
-                left: sx(t.x),
-                top: sy(t.y),
-                width: Math.max(2, t.w * z),
-                height: Math.max(2, t.h * z),
-                boxShadow: selected
-                  ? "0 0 0 2px #a78bfa, 0 6px 18px rgba(0,0,0,.45)"
-                  : "0 3px 10px rgba(0,0,0,.35)",
-                zIndex: selected ? 5 : 1,
+                transform: `translate3d(${t.x * z + tx}px, ${t.y * z + ty}px, 0)`,
+                width: t.w * z,
+                height: t.h * z,
+                zIndex: picked ? 30 : selected ? 5 : 1,
               }}
               onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
             >
-              <img
-                src={thumbUrl(t.id)}
-                alt=""
-                loading="lazy"
-                draggable={false}
-                className="w-full h-full object-cover pointer-events-none"
-                style={{ backgroundColor: "#26282f" }}
-              />
+              {/* 内层负责缩放动画：只有被选中的那张动，平移始终零延迟 */}
+              <div
+                className="absolute inset-0 overflow-hidden transition-[transform,opacity,box-shadow,filter] duration-300 ease-out"
+                style={{
+                  transform: `scale(${picked ? 1.3 : 1})`,
+                  transformOrigin: "center",
+                  opacity: picked ? 1 : 0.85,
+                  filter: picked ? "none" : "brightness(0.72)",
+                  borderRadius: picked ? 4 : 0,
+                  boxShadow: picked
+                    ? "0 0 0 1.5px rgba(255,255,255,.95), 0 26px 90px rgba(0,0,0,.8), 0 8px 30px rgba(0,0,0,.55)"
+                    : selected
+                      ? "inset 0 0 0 2px rgba(167,139,250,.6)"
+                      : "none",
+                }}
+              >
+                <img
+                  src={thumbUrl(t.id)}
+                  alt=""
+                  loading="lazy"
+                  draggable={false}
+                  className="w-full h-full object-cover pointer-events-none"
+                  style={{ backgroundColor: "#15171c" }}
+                />
+              </div>
             </div>
           );
         })}
       </div>
 
-      {/* 框选矩形 */}
-      {marquee && (
-        <div
-          className="absolute border border-violet-400/80 bg-violet-400/10 pointer-events-none"
-          style={{
-            left: Math.min(marquee.x0, marquee.x1),
-            top: Math.min(marquee.y0, marquee.y1),
-            width: Math.abs(marquee.x1 - marquee.x0),
-            height: Math.abs(marquee.y1 - marquee.y0),
-          }}
-        />
-      )}
+      {/* 顶部/底部渐隐遮罩 */}
+      <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
+      <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
 
-      {/* 小地图 */}
-      {showMinimap && (
-        <Minimap
-          layout={layout}
-          tx={tx}
-          ty={ty}
-          z={z}
-          viewport={{ w: size.w, h: size.h }}
-          onJump={(wx, wy) => {
-            setTx(size.w / 2 - wx * z);
-            setTy(size.h / 2 - wy * z);
-          }}
-          onClose={() => setShowMinimap(false)}
-        />
-      )}
-
-      {/* 控制按钮 */}
-      <div className="absolute right-4 bottom-4 flex flex-col gap-1.5 bg-panel/90 border border-border rounded-lg p-1 backdrop-blur">
-        <button className="btn justify-center" title="放大" onClick={() => zoomBy(1.25)}>
-          <ZoomIn size={15} />
-        </button>
-        <button className="btn justify-center" title="缩小" onClick={() => zoomBy(0.8)}>
-          <ZoomOut size={15} />
-        </button>
-        <button className="btn justify-center" title="回到起点" onClick={recenter}>
-          <Crosshair size={15} />
-        </button>
-        <button className="btn justify-center" title="全览" onClick={() => zoomBy(0.35)}>
-          <Maximize2 size={15} />
-        </button>
-        <button
-          className={`btn justify-center ${showMinimap ? "text-violet-300" : ""}`}
-          title="小地图"
-          onClick={() => setShowMinimap(!showMinimap)}
-        >
-          <MapIcon size={15} />
-        </button>
-      </div>
-
-      <div className="absolute left-4 bottom-4 text-[11px] text-neutral-500 bg-panel/80 border border-border rounded px-2 py-1 backdrop-blur">
-        拖拽平移 · 滚轮缩放 · 方向键平移 · Shift+拖拽框选 · 双击预览 · 共 {items.length} 张
-      </div>
-    </div>
-  );
-}
-
-/** 小地图：显示已布局瓦片的整体分布与当前视口，点击跳转 */
-function Minimap({
-  layout,
-  tx,
-  ty,
-  z,
-  viewport,
-  onJump,
-  onClose,
-}: {
-  layout: MosaicLayout;
-  tx: number;
-  ty: number;
-  z: number;
-  viewport: { w: number; h: number };
-  onJump: (wx: number, wy: number) => void;
-  onClose: () => void;
-}) {
-  const W = 168;
-  const H = 120;
-  const bounds = layout.currentBounds;
-  const tiles = layout.allTiles();
-
-  const viewWorld = {
-    x0: (0 - tx) / z,
-    y0: (0 - ty) / z,
-    x1: (viewport.w - tx) / z,
-    y1: (viewport.h - ty) / z,
-  };
-
-  // 世界 → 小地图坐标
-  const pad = 8;
-  const worldW = bounds ? Math.max(bounds.x1 - bounds.x0, viewWorld.x1 - viewWorld.x0) : 1000;
-  const worldH = bounds ? Math.max(bounds.y1 - bounds.y0, viewWorld.y1 - viewWorld.y0) : 1000;
-  const worldX0 = bounds ? Math.min(bounds.x0, viewWorld.x0) : -500;
-  const worldY0 = bounds ? Math.min(bounds.y0, viewWorld.y0) : -500;
-  const scale = Math.min((W - pad * 2) / worldW, (H - pad * 2) / worldH);
-  const mx = (wx: number) => pad + (wx - worldX0) * scale;
-  const my = (wy: number) => pad + (wy - worldY0) * scale;
-
-  return (
-    <div className="absolute right-4 top-4 bg-panel/95 border border-border rounded-lg shadow-2xl backdrop-blur pop-in">
-      <div className="flex items-center gap-1 px-2 py-1 border-b border-border">
-        <MapIcon size={11} className="text-neutral-500" />
-        <span className="text-[10px] text-neutral-500 flex-1">小地图</span>
-        <button className="btn !p-0.5" onClick={onClose}><X size={10} /></button>
-      </div>
-      <svg
-        width={W}
-        height={H}
-        className="cursor-pointer"
-        onClick={(e) => {
-          const rect = (e.target as SVGElement).closest("svg")!.getBoundingClientRect();
-          const px = e.clientX - rect.left;
-          const py = e.clientY - rect.top;
-          const wx = (px - pad) / scale + worldX0;
-          const wy = (py - pad) / scale + worldY0;
-          onJump(wx, wy);
-        }}
+      {/* 退出按钮 */}
+      <button
+        className="absolute left-4 top-4 w-9 h-9 rounded-full bg-black/55 backdrop-blur border border-white/10 text-neutral-200 flex items-center justify-center hover:bg-black/75 z-30"
+        title="退出 (Esc)"
+        onClick={() => setView("masonry")}
       >
-        {/* 全部瓦片轮廓 */}
-        {tiles.map((t) => (
-          <rect
-            key={t.id}
-            x={mx(t.x)}
-            y={my(t.y)}
-            width={Math.max(1, t.w * scale)}
-            height={Math.max(1, t.h * scale)}
-            fill="#3d3f48"
-            rx="0.5"
-          />
-        ))}
-        {/* 当前视口 */}
-        <rect
-          x={mx(viewWorld.x0)}
-          y={my(viewWorld.y0)}
-          width={Math.max(3, (viewWorld.x1 - viewWorld.x0) * scale)}
-          height={Math.max(3, (viewWorld.y1 - viewWorld.y0) * scale)}
-          fill="rgba(167,139,250,0.15)"
-          stroke="#a78bfa"
-          strokeWidth="1.5"
-          rx="1"
-        />
-      </svg>
+        <X size={17} />
+      </button>
     </div>
   );
 }

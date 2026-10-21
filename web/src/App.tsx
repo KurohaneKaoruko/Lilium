@@ -11,7 +11,6 @@ import ListView from "./components/views/ListView";
 import InfiniteView from "./components/views/InfiniteView";
 import { DuplicatesModal, BatchRenameModal, SelectionBar, SettingsModal, ShortcutsModal } from "./components/modals/Modals";
 import DropOverlay from "./components/DropOverlay";
-import AmbientView from "./components/views/AmbientView";
 import CollectionsView from "./components/views/CollectionsView";
 import { useStore } from "./store/useStore";
 import { api } from "./api/client";
@@ -55,6 +54,7 @@ export default function App() {
       }
       if (e.key === "Escape") {
         if (st.lightboxId) return; // Lightbox 自己处理
+        if (st.view === "infinite") { st.setView("masonry"); return; }
         st.clearSelection();
         st.setDetail(null);
       }
@@ -87,13 +87,15 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
+  const fullscreen = view === "infinite";
+
   return (
     <div className="h-full flex flex-col">
-      <TopBar onImported={() => setToast("导入完成")} />
+      {!fullscreen && <TopBar onImported={() => setToast("导入完成")} />}
       <div className="flex-1 flex min-h-0">
-        <Sidebar />
-        <main className="flex-1 flex flex-col min-w-0 relative">
-          {similarIds && (
+        {!fullscreen && <Sidebar />}
+        <main className={fullscreen ? "flex-1 flex min-w-0 relative" : "flex-1 flex flex-col min-w-0 relative"}>
+          {!fullscreen && similarIds && (
             <div className="h-9 shrink-0 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-2 px-3 text-xs text-amber-300">
               <Wand2 size={13} />
               相似图片结果 · {similarIds.length} 张
@@ -104,11 +106,10 @@ export default function App() {
           {view === "grid" && <GridView />}
           {view === "list" && <ListView />}
           {view === "infinite" && <InfiniteView />}
-          {view === "ambient" && <AmbientView />}
           {view === "collections" && <CollectionsView />}
-          <SelectionBar />
+          {!fullscreen && <SelectionBar />}
         </main>
-        <DetailPanelWrapper />
+        {!fullscreen && <DetailPanelWrapper />}
       </div>
 
       <Lightbox />

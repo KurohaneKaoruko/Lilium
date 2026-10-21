@@ -1,6 +1,6 @@
 # 🌸 Lilium
 
-本地优先的图片 / 素材管理工具 —— 参考 Eagle 的完整功能集，并加入独特的**无限视图**。
+本地优先的图片 / 素材管理工具，具备同类工具的完整功能集，并加入独特的**无限视图**。
 
 > 一套 Rust 核心，三种形态：**桌面端 (Tauri 2)** · **自托管 Web 服务端** · **Docker 部署**
 
@@ -12,7 +12,7 @@
 - 布局按需生成（环形生长算法），数万张图片依然流畅
 - Shift+拖拽框选、双击大图预览、点阵背景随视差移动
 
-### Eagle 完整功能集
+### 完整功能集
 - 📁 **嵌套文件夹** + 📌 **智能文件夹**（保存搜索条件）
 - 🏷️ **标签系统**（彩色标签、计数、批量打标）
 - ⭐ 评分（0–5 星）、📝 注释、🔗 来源 URL
@@ -25,12 +25,12 @@
 - ✂️ 批量操作：加标签 / 评分 / 移动 / 重命名（支持 `{name} {index} {date} {w} {h}` 模式）
 - 📷 EXIF 读取（相机 / 参数 / 拍摄时间）、视频海报帧（自动检测 ffmpeg）
 
-### 🦅 Eagle 库兼容导入
-直接导入 Eagle 的 `.library` 库目录，完整迁移：
+### 📦 库迁移导入
+支持直接导入 Eagle 等同类图片管理器的库目录（`.library`），完整迁移：
 - 文件夹树（含嵌套）、标签（含颜色）
 - 评分（star）、注释（annotation）、来源 URL
 - 调色板（palettes）、尺寸 / 大小 / 添加时间等元数据
-- **复用 Eagle 生成的 thumbnail.png**，秒级完成导入无需重新生成
+- 复用原库已生成的缩略图，秒级完成导入无需重新生成
 
 ## 🚀 快速开始
 
@@ -63,13 +63,13 @@ docker compose up -d          # 或 docker build -t lilium . && docker run -d -p
 ```
 - 数据持久化在 `lilium-data` 卷；把宿主机目录挂载到容器内后即可用「磁盘导入」路径导入
 
-## 🦅 导入 Eagle 库
+## 📦 导入现有库
 
 两种方式：
-1. **Web UI**：顶栏 → 「Eagle 库」→ 输入 `.library` 目录的绝对路径
+1. **Web UI**：顶栏 → 「库导入」→ 输入 `.library` 库目录的绝对路径
 2. **命令行**：`lilium-server --library ~/Pictures/Design.library`（自动识别并导入）
 
-导入在库旁生成同名 `.lilium` 库，原 Eagle 库保持只读不动。
+导入在库旁生成同名 `.lilium` 库，原库保持只读不动。
 
 ## ⌨️ 快捷键
 
@@ -88,14 +88,14 @@ docker compose up -d          # 或 docker build -t lilium . && docker run -d -p
 
 ```
 crates/
-  lilium-core     核心：库管理、SQLite、缩略图、调色板、感知哈希、Eagle 导入
+  lilium-core     核心：库管理、SQLite、缩略图、调色板、感知哈希、库迁移导入
   lilium-server   Web 服务端：Axum REST API + 静态托管
 src-tauri/        桌面端：Tauri 2 壳 + 原生命令
 web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 ```
 
 - 库结构：`MyLib.lilium/library.db (SQLite) + images/xx/<id>.<ext> + thumbnails/xx/<id>.jpg`
-- 条目 ID 为 20 位大写字母数字（Eagle 同款风格），导入 Eagle 条目时**沿用原 ID**，可重复导入不产生副本
+- 条目 ID 为 20 位大写字母数字，导入已有库条目时**沿用原 ID**，可重复导入不产生副本
 
 ## 📋 系统要求
 

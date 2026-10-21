@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil } from "lucide-react";
+import { Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil, Link2, FolderOpen, Save } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { api, humanSize } from "../../api/client";
 import { Thumb } from "../views/shared";
@@ -82,6 +82,112 @@ export function DuplicatesModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+
+/** 导入路径弹窗（URL / 磁盘路径 / 库迁移）——代替早期的 prompt() */
+export function ImportPathModal({
+  mode,
+  onClose,
+}: {
+  mode: "url" | "disk" | "library";
+  onClose: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const refreshMeta = useStore((s) => s.refreshMeta);
+  const fetchItems = useStore((s) => s.fetchItems);
+  const folderId = useStore((s) => s.filters.folderId);
+
+  const meta = {
+    url: {
+      title: "URL 导入",
+      icon: <Link2 size={14} />,
+      placeholder: "https://example.com/image.png",
+      hint: "粘贴图片直链或网页 URL，服务端会抓取后入库。",
+      inputLabel: "URL",
+    },
+    disk: {
+      title: "磁盘导入",
+      icon: <HardDrive size={14} />,
+      placeholder: "/home/user/Pictures/photos 或 /a.png, /b/c.zip",
+      hint: "导入发生在服务端进程内：浏览器安全限制不允许直接读取本机目录，因此需要填写服务器（或桌面版本机）可以访问的绝对路径，可逗号分隔多个。",
+      inputLabel: "路径（可逗号分隔）",
+    },
+    library: {
+      title: "库迁移导入",
+      icon: <FolderOpen size={14} />,
+      placeholder: "/home/user/Pictures/Design.library",
+      hint: "把现有图片管理软件的库目录迁移进来：完整保留文件夹树、标签（含颜色）、评分、注释、调色板等；同样需要服务器本机可见的绝对路径，可重复执行以增量导入。",
+      inputLabel: "库目录路径",
+    },
+  }[mode];
+
+  const submit = async () => {
+    const v = text.trim();
+    if (!v || busy) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      if (mode === "url") {
+        await api("/import/url", { method: "POST", body: JSON.stringify({ url: v, folderId }) });
+        setResult({ ok: true, text: "导入完成" });
+      } else if (mode === "disk") {
+        const paths = v.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+        const r = await api<{ imported: number; errors: string[] }>("/import/paths", {
+          method: "POST",
+          body: JSON.stringify({ paths, folderId }),
+        });
+        setResult({ ok: true, text: `导入 ${r.imported} 项${r.errors?.length ? `（${r.errors.length} 项失败：${r.errors.slice(0, 3).join("；")}${r.errors.length > 3 ? "…" : ""}）` : ""}` });
+      } else {
+        const r = await api<{ report: { folders: number; items: number; tags: number; skipped: number } }>(
+          "/import/eagle",
+          { method: "POST", body: JSON.stringify({ path: v }) },
+        );
+        setResult({
+          ok: true,
+          text: `迁移完成：文件夹 ${r.report.folders} · 条目 ${r.report.items} · 标签 ${r.report.tags}${r.report.skipped ? ` · 跳过 ${r.report.skipped}` : ""}`,
+        });
+      }
+      refreshMeta();
+      fetchItems();
+    } catch (e) {
+      setResult({ ok: false, text: String(e instanceof Error ? e.message : e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={meta.title} onClose={onClose} icon={meta.icon}>
+      <div className="p-4 space-y-3">
+        <div className="text-[11px] text-neutral-400 bg-black/30 border border-border rounded-lg p-3 leading-relaxed">
+          {meta.hint}
+        </div>
+        <label className="block text-[11px] text-neutral-500">{meta.inputLabel}</label>
+        <input
+          autoFocus
+          className="input w-full font-mono text-xs"
+          placeholder={meta.placeholder}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+        />
+        {result && (
+          <div className={`text-xs px-3 py-2 rounded-lg border ${result.ok ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" : "text-red-300 border-red-500/30 bg-red-500/10"}`}>
+            {result.ok ? "✓ " : "✗ "}{result.text}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button className="btn" onClick={onClose}>{result?.ok ? "关闭" : "取消"}</button>
+          <button className="btn-primary" disabled={busy || !text.trim()} onClick={submit}>
+            {busy ? "导入中…" : <><Save size={13} /> 导入</>}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /** 快捷键说明 */
 export function ShortcutsModal({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
@@ -93,7 +199,7 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
     ["Esc", "关闭弹窗 / 取消选择"],
     ["0–5", "灯箱中快速评分"],
     ["Delete", "删除选中项"],
-    ["无限视图", "拖拽平移 · 滚轮缩放 · Shift+拖拽框选 · 双击预览"],
+    ["无限视图", "全屏沉浸 · 拖拽平移 · 滚轮/←→ 切换 · 空格播放 · Esc 退出"],
   ];
   return (
     <Modal title="快捷键" onClose={onClose} icon={<Keyboard size={14} />}>
@@ -170,7 +276,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         </label>
 
         <div className="text-[11px] text-neutral-600 border-t border-border pt-3">
-          Lilium v0.1.0 · Rust + React · 支持 Eagle (.library) 库导入
+          Lilium v0.1.0 · Rust + React · 图片素材管理器
         </div>
       </div>
     </Modal>

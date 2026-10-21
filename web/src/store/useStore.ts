@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, type Folder, type Item, type LibraryInfo, type SmartFolder, type Tag } from "../api/client";
 
-export type ViewMode = "grid" | "masonry" | "list" | "infinite" | "ambient" | "collections";
+export type ViewMode = "grid" | "masonry" | "list" | "infinite" | "collections";
 export type SortKey = "addedAt" | "createdAt" | "name" | "size" | "width" | "height" | "rating" | "duration" | "random";
 
 export interface Filters {

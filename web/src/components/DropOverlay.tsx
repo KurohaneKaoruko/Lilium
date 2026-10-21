@@ -3,7 +3,7 @@ import { UploadCloud } from "lucide-react";
 import { useStore } from "../store/useStore";
 import { apiBase } from "../api/client";
 
-/** 全局拖放导入：把 OS 里的文件/文件夹拖进窗口即导入到当前文件夹（Eagle 式体验） */
+/** 全局拖放导入：把 OS 里的文件/文件夹拖进窗口即导入到当前文件夹（类 Eagle 体验） */
 export default function DropOverlay() {
   const [depth, setDepth] = useState(0);
   const [busy, setBusy] = useState(false);

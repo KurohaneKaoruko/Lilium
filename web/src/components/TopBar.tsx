@@ -1,17 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  LayoutGrid, Rows3, List, Sparkles, Search, Upload, Link2, Import, X,
-  FolderPlus, RefreshCcw, Keyboard, Settings, AudioWaveform, Shapes,
+  LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, Link2, Import, X,
+  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes,
 } from "lucide-react";
 import { useStore, type ViewMode } from "../store/useStore";
+import { ImportPathModal } from "./modals/Modals";
 import { api } from "../api/client";
 
 const VIEWS: { key: ViewMode; icon: React.ReactNode; label: string }[] = [
   { key: "masonry", icon: <LayoutGrid size={15} />, label: "瀑布流" },
   { key: "grid", icon: <Rows3 size={15} />, label: "网格" },
   { key: "list", icon: <List size={15} />, label: "列表" },
-  { key: "infinite", icon: <Sparkles size={15} />, label: "无限画布" },
-  { key: "ambient", icon: <AudioWaveform size={15} />, label: "氛围墙" },
+  { key: "infinite", icon: <InfinityIcon size={15} />, label: "无限视图" },
   { key: "collections", icon: <Shapes size={15} />, label: "分类墙" },
 ];
 
@@ -26,6 +26,7 @@ const SORTS: { key: string; label: string }[] = [
 ];
 
 export default function TopBar({ onImported }: { onImported: () => void }) {
+  const [importMode, setImportMode] = useState<null | "url" | "disk" | "library">(null);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   const zoom = useStore((s) => s.zoom);
@@ -68,40 +69,6 @@ export default function TopBar({ onImported }: { onImported: () => void }) {
     fd.append("folderId", filters.folderId ?? "");
     for (const f of Array.from(files)) fd.append("files", f, f.name);
     await api("/import/upload", { method: "POST", body: fd });
-    refreshMeta();
-    useStore.getState().fetchItems();
-    onImported();
-  };
-
-  const importFromDisk = async () => {
-    const p = prompt("输入要导入的文件/文件夹的绝对路径（服务端本地路径，支持批量逗号分隔）：");
-    if (!p?.trim()) return;
-    const paths = p.split(",").map((s) => s.trim()).filter(Boolean);
-    await api("/import/paths", { method: "POST", body: JSON.stringify({ paths, folderId: filters.folderId }) });
-    refreshMeta();
-    useStore.getState().fetchItems();
-    onImported();
-  };
-
-  const importFromUrl = async () => {
-    const url = prompt("输入图片/资源的 URL：");
-    if (!url?.trim()) return;
-    await api("/import/url", { method: "POST", body: JSON.stringify({ url: url.trim(), folderId: filters.folderId }) });
-    refreshMeta();
-    useStore.getState().fetchItems();
-    onImported();
-  };
-
-  const importEagle = async () => {
-    const p = prompt("输入 Eagle 库目录的绝对路径（例如 ~/Pictures/Design.library）：");
-    if (!p?.trim()) return;
-    const r = await api<{ report: { folders: number; items: number; tags: number; skipped: number } }>(
-      "/import/eagle",
-      { method: "POST", body: JSON.stringify({ path: p.trim() }) },
-    );
-    alert(
-      `Eagle 库导入完成：\n文件夹 ${r.report.folders} · 条目 ${r.report.items} · 标签 ${r.report.tags}${r.report.skipped ? ` · 跳过 ${r.report.skipped}` : ""}`,
-    );
     refreshMeta();
     useStore.getState().fetchItems();
     onImported();
@@ -170,9 +137,9 @@ export default function TopBar({ onImported }: { onImported: () => void }) {
         <span className="text-[11px] text-neutral-500 mr-1">
           {loading ? "加载中…" : `${total} 项`}
         </span>
-        <button className="btn" onClick={importFromUrl} title="从 URL 导入"><Link2 size={14} /> URL</button>
-        <button className="btn" onClick={importFromDisk} title="从磁盘路径导入"><Import size={14} /> 磁盘</button>
-        <button className="btn" onClick={importEagle} title="导入 Eagle 库"><FolderPlus size={14} /> Eagle 库</button>
+        <button className="btn" onClick={() => setImportMode("url")} title="从 URL 导入"><Link2 size={14} /> URL</button>
+        <button className="btn" onClick={() => setImportMode("disk")} title="从磁盘路径导入"><Import size={14} /> 磁盘</button>
+        <button className="btn" onClick={() => setImportMode("library")} title="导入图片管理器的库目录"><FolderPlus size={14} /> 库导入</button>
         <label className="btn-primary cursor-pointer">
           <Upload size={13} />
           导入
@@ -182,6 +149,8 @@ export default function TopBar({ onImported }: { onImported: () => void }) {
           <RefreshCcw size={13} />
         </button>
       </div>
+
+      {importMode && <ImportPathModal mode={importMode} onClose={() => setImportMode(null)} />}
     </header>
   );
 }
