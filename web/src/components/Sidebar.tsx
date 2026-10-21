@@ -174,14 +174,14 @@ export default function Sidebar({ immersive = false }: { immersive?: boolean }) 
 
   return (
     <aside
-      className={`shrink-0 flex flex-col overflow-y-auto ${
-        immersive ? "w-56 h-full bg-transparent border-r-0" : "w-56 bg-panel border-r border-border"
+      className={`flex flex-col overflow-y-auto overflow-x-hidden ${
+        immersive ? "w-56 h-full bg-transparent" : "w-56 shrink-0 bg-panel border-r border-border"
       }`}
     >
       {/* 库信息 */}
-      <div className="px-3 py-3 border-b border-border">
+      <div className="px-3 py-3 border-b border-border min-w-[224px]">
         <div className="flex items-center gap-2">
-          <span className="text-lg">🌸</span>
+          <span className="text-lg shrink-0">🌸</span>
           <div className="min-w-0">
             <div className="text-xs font-medium truncate">{info?.name ?? "Lilium"}</div>
             <div className="text-[10px] text-neutral-500">
@@ -192,7 +192,7 @@ export default function Sidebar({ immersive = false }: { immersive?: boolean }) 
       </div>
 
       {/* 快速入口 */}
-      <div className="px-2 py-2 space-y-0.5 border-b border-border">
+      <div className="px-2 py-2 space-y-0.5 border-b border-border min-w-[224px]">
         <SideBtn active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={14} />} label="全部图片" />
         <SideBtn active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={14} />} label="未分类" />
         <SideBtn active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={14} />} label="未加标签" />
@@ -324,7 +324,7 @@ export default function Sidebar({ immersive = false }: { immersive?: boolean }) 
 function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className="border-b border-border py-2">
+    <div className="border-b border-border py-2 min-w-[224px]">
       <div className="flex items-center justify-between px-3 mb-1">
         <button className="text-[10px] font-medium tracking-wider text-neutral-500 uppercase hover:text-neutral-300" onClick={() => setCollapsed(!collapsed)}>
           {title}
@@ -343,9 +343,10 @@ function SideBtn({ active, onClick, icon, label }: { active: boolean; onClick: (
         active ? "bg-violet-500/15 text-violet-300" : "text-neutral-300 hover:bg-white/5"
       }`}
       onClick={onClick}
+      title={label}
     >
-      {icon}
-      {label}
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate">{label}</span>
     </button>
   );
 }

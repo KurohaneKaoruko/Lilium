@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Wand2, Image as ImageIcon, Inbox, Tags as TagsIcon, Trash2, Keyboard as KeyboardIcon, Settings as SettingsIcon } from "lucide-react";
+import { Wand2 } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import DetailPanel from "./components/DetailPanel";
@@ -40,18 +40,6 @@ export default function App() {
     const h = (e: Event) => setRenameIds((e as CustomEvent).detail.ids);
     window.addEventListener("lilium:batch-rename", h);
     return () => window.removeEventListener("lilium:batch-rename", h);
-  }, []);
-
-  // MiniRail 呼出的弹窗
-  useEffect(() => {
-    const a = () => setModal("shortcuts");
-    const b = () => setModal("settings");
-    window.addEventListener("lilium:open-shortcuts", a);
-    window.addEventListener("lilium:open-settings", b);
-    return () => {
-      window.removeEventListener("lilium:open-shortcuts", a);
-      window.removeEventListener("lilium:open-settings", b);
-    };
   }, []);
 
   // 全局快捷键
@@ -190,9 +178,8 @@ function DetailPanelWrapper() {
 }
 
 /**
- * 沉浸视图的悬浮容器:顶栏(含窗口钮)固定常驻;左栏是唯一可收起面板——
- * 收起 = 48px 图标轨,悬停原地张开成 224px 完整侧栏。
- * 过渡:宽度 + 内层反向位移(内容像"从轨后滑出"),叠加交叉淡化,无跳变。
+ * 沉浸视图的悬浮容器:顶栏固定常驻;左栏就是 Sidebar 本身这一个 box——
+ * 收起 48px(只露出每行最左的图标),悬停原地张开 224px,内容随宽度自然呈现。
  */
 function FloatingChrome({ children }: { children: (mode: "top" | "left") => React.ReactNode }) {
   const chromeLeft = useStore((s) => s.chromeLeft);
@@ -216,7 +203,7 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           <WindowControls />
         </div>
       </div>
-      {/* 左栏:收起 = 48px 图标轨(从屏幕顶开始);张开 = 224px 完整侧栏(顶栏下方,不被遮挡) */}
+      {/* 左栏:一个 box,48 ⇄ 224,悬停张开 */}
       <div
         data-chrome-left
         onPointerEnter={() => {
@@ -224,108 +211,16 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           setChromeLeft(true);
         }}
         onPointerLeave={release}
-        className="absolute left-0 top-0 bottom-0 z-30 overflow-hidden"
+        className="absolute left-0 top-0 bottom-0 z-30 overflow-hidden bg-panel/85 backdrop-blur-md border-r border-border/60"
         style={{
           width: chromeLeft ? 224 : 48,
           transition: "width 340ms cubic-bezier(.22,1,.36,1)",
           boxShadow: "8px 0 24px rgba(0,0,0,.25)",
         }}
       >
-        {/* 完整侧栏:顶栏下方起,收起时向左滑 176px(224-48)藏进裁剪区,叠交叉淡化 */}
-        <div
-          className="absolute left-0 right-0 bottom-0 w-56 bg-panel/85 backdrop-blur-md border-r border-border/60"
-          style={{
-            top: 44,
-            transform: chromeLeft ? "translateX(0)" : "translateX(-176px)",
-            opacity: chromeLeft ? 1 : 0,
-            pointerEvents: chromeLeft ? "auto" : "none",
-            transition: chromeLeft
-              ? "transform 340ms cubic-bezier(.22,1,.36,1), opacity 240ms ease 60ms"
-              : "transform 340ms cubic-bezier(.22,1,.36,1), opacity 160ms ease",
-          }}
-          aria-hidden={!chromeLeft}
-        >
-          {children("left")}
-        </div>
-        {/* 图标轨 = 侧栏的收起态(同一容器内,张开后淡出) */}
-        <MiniRail collapsed={chromeLeft} />
+        {children("left")}
       </div>
     </>
   );
 }
 
-/** 左栏收起态的图标轨:与完整侧栏同处一个容器,张开后淡出让位 */
-function MiniRail({ collapsed }: { collapsed: boolean }) {
-  const filters = useStore((s) => s.filters);
-  const setFilters = useStore((s) => s.setFilters);
-  const resetFilters = useStore((s) => s.resetFilters);
-  const info = useStore((s) => s.info);
-
-  const item = (active: boolean) =>
-    `w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
-      active
-        ? "bg-violet-500/25 text-violet-200"
-        : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
-    }`;
-
-  return (
-    <div
-      className="absolute inset-y-0 left-0 w-12 bg-panel/85 backdrop-blur-md flex flex-col items-center py-2 gap-1"
-      style={{
-        opacity: collapsed ? 0 : 1,
-        pointerEvents: collapsed ? "none" : "auto",
-        transition: collapsed ? "opacity 120ms ease" : "opacity 220ms ease 60ms",
-      }}
-      aria-hidden={collapsed}
-    >
-      <div className="text-lg leading-none mb-1" title={info?.name ?? "Lilium"}>
-        🌸
-      </div>
-      <button
-        className={item(
-          !filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged,
-        )}
-        title="全部图片"
-        onClick={() => resetFilters()}
-      >
-        <ImageIcon size={15} />
-      </button>
-      <button
-        className={item(filters.unfiled)}
-        title="未分类"
-        onClick={() => setFilters({ unfiled: true, folderId: null, trash: false, smartId: null })}
-      >
-        <Inbox size={15} />
-      </button>
-      <button
-        className={item(filters.untagged)}
-        title="未加标签"
-        onClick={() => setFilters({ untagged: true, folderId: null, trash: false, smartId: null })}
-      >
-        <TagsIcon size={15} />
-      </button>
-      <button
-        className={item(filters.trash)}
-        title="回收站"
-        onClick={() => setFilters({ trash: true, folderId: null, smartId: null })}
-      >
-        <Trash2 size={15} />
-      </button>
-      <div className="flex-1" />
-      <button
-        className={item(false)}
-        title="快捷键 (?)"
-        onClick={() => window.dispatchEvent(new CustomEvent("lilium:open-shortcuts"))}
-      >
-        <KeyboardIcon size={15} />
-      </button>
-      <button
-        className={item(false)}
-        title="设置"
-        onClick={() => window.dispatchEvent(new CustomEvent("lilium:open-settings"))}
-      >
-        <SettingsIcon size={15} />
-      </button>
-    </div>
-  );
-}
