@@ -134,29 +134,50 @@ export class MosaicLayout {
     for (let s = 0; s < SLOTS_PER_BLOCK; s++) this.emitted.delete(`${bx}:${by}:${s}`);
   }
 
-  private orientationOf(bx: number, by: number): number {
-    const cellCol = ((bx % this.geometry.blocksPerRow) + this.geometry.blocksPerRow) % this.geometry.blocksPerRow;
-    const cellRow = ((by % this.geometry.blockRows) + this.geometry.blockRows) % this.geometry.blockRows;
+  /** 块的 [template, mirror]:模板按单元内位置周期选,镜像按坐标哈希选 */
+  private blockStyle(bx: number, by: number): { template: number; mirror: number } {
+    const g = this.geometry;
+    const cellCol = ((bx % g.blocksPerRow) + g.blocksPerRow) % g.blocksPerRow;
+    const cellRow = ((by % g.blockRows) + g.blockRows) % g.blockRows;
     const template = (cellCol + cellRow * 2) % TEMPLATES.length;
-    const orientation = template * REFLECTION_COUNT + (mixBlockCoords(bx, by) % REFLECTION_COUNT);
-    // WALL_REFLOWS 的维度是 [template][orientationInTemplate][expandedSlot]
-    // orientationInTemplate = orientation % REFLECTION_COUNT(镜像),模板已由 template 决定
-    return orientation;
+    const mirror = mixBlockCoords(bx, by) % REFLECTION_COUNT;
+    return { template, mirror };
+  }
+
+  private orientationOf(bx: number, by: number): number {
+    const { template, mirror } = this.blockStyle(bx, by);
+    return template * REFLECTION_COUNT + mirror;
   }
 
   /** 该块/槽位在展开态使用的重排表(无则返回 null) */
   private reflowFor(bx: number, by: number, slot: number): BlockSlot[] | null {
-    const orientation = this.orientationOf(bx, by);
-    const template = orientation % TEMPLATES.length;
-    const mirror = orientation % REFLECTION_COUNT;
+    const { template, mirror } = this.blockStyle(bx, by);
     return WALL_REFLOWS[template]?.[mirror]?.[slot] ?? null;
+  }
+
+  /** 展开实例的 hero(6×6)世界矩形中心(同步计算,不依赖 DOM/缓存) */
+  heroRect(bx: number, by: number, slot: number): { cx: number; cy: number } | null {
+    const layout = this.reflowFor(bx, by, slot);
+    if (!layout) return null;
+    const s = layout[slot];
+    const g = this.geometry;
+    return {
+      cx: bx * g.blockWidth + (s.x + s.w / 2) * this.pitch,
+      cy: by * g.blockHeight + (s.y + s.h / 2) * this.pitch,
+    };
+  }
+
+  /** 某块的世界中心 */
+  blockCenter(bx: number, by: number): { x: number; y: number } {
+    const g = this.geometry;
+    return { x: bx * g.blockWidth + g.blockWidth / 2, y: by * g.blockHeight + g.blockHeight / 2 };
   }
 
   /** 一个槽位在普通态的世界矩形 */
   private instanceRect(bx: number, by: number, slot: number) {
     const g = this.geometry;
-    const template = TEMPLATES[this.orientationOf(bx, by) % TEMPLATES.length];
-    const s = template[slot];
+    const { template } = this.blockStyle(bx, by);
+    const s = TEMPLATES[template][slot];
     const x = bx * g.blockWidth + s.x * this.pitch;
     const y = by * g.blockHeight + s.y * this.pitch;
     return { x, y, w: s.w * this.pitch - this.gap, h: s.h * this.pitch - this.gap };

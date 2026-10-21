@@ -34,7 +34,7 @@ export default function InfiniteView() {
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingPan = useRef<{ tx: number; ty: number } | null>(null);
-  const animRef = useRef<number | null>(null);
+  const animRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastClick = useRef<{ key: string; t: number } | null>(null);
 
   // 视口尺寸
@@ -60,10 +60,13 @@ export default function InfiniteView() {
     [layout],
   );
 
-  /** 平滑居中世界点 */
+  /** 平滑居中世界点(时间基补间,不依赖 rAF——后台/遮挡时也能到位) */
   const glideTo = useCallback(
     (wx: number, wy: number) => {
-      if (animRef.current !== null) cancelAnimationFrame(animRef.current);
+      if (animRef.current !== null) {
+        clearInterval(animRef.current);
+        animRef.current = null;
+      }
       const startTx = tx;
       const startTy = ty;
       const endTx = size.w / 2 - wx * z;
@@ -71,15 +74,16 @@ export default function InfiniteView() {
       const t0 = performance.now();
       const dur = 500;
       const ease = (t: number) => 1 - Math.pow(1 - t, 3);
-      const step = (now: number) => {
-        const p = Math.min(1, (now - t0) / dur);
+      animRef.current = window.setInterval(() => {
+        const p = Math.min(1, (performance.now() - t0) / dur);
         const e = ease(p);
         setTx(startTx + (endTx - startTx) * e);
         setTy(startTy + (endTy - startTy) * e);
-        if (p < 1) animRef.current = requestAnimationFrame(step);
-        else animRef.current = null;
-      };
-      animRef.current = requestAnimationFrame(step);
+        if (p >= 1) {
+          clearInterval(animRef.current!);
+          animRef.current = null;
+        }
+      }, 16);
     },
     [tx, ty, z, size],
   );
@@ -133,10 +137,14 @@ export default function InfiniteView() {
     }
   };
 
+  const dragActiveRef = useRef(false);
+  /** 平移/缩放进行中禁用瓦片位置过渡,避免拖影;结束后恢复使重排有动画 */
+  const [animAllowed, setAnimAllowed] = useState(true);
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     if (animRef.current !== null) {
-      cancelAnimationFrame(animRef.current);
+      clearInterval(animRef.current);
       animRef.current = null;
     }
     try {
@@ -145,6 +153,8 @@ export default function InfiniteView() {
       /* ignore */
     }
     dragRef.current = { x: e.clientX, y: e.clientY, tx, ty, moved: false };
+    dragActiveRef.current = true;
+    setAnimAllowed(false);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -160,6 +170,9 @@ export default function InfiniteView() {
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
+    dragActiveRef.current = false;
+    // 下一帧恢复过渡:本帧先按新位置渲染,避免从旧位置滑过来
+    requestAnimationFrame(() => setAnimAllowed(true));
     if (!d || d.moved) return;
     // 单击命中检测
     const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -181,14 +194,17 @@ export default function InfiniteView() {
     const prev = lastClick.current;
     if (prev && prev.key === key && Date.now() - prev.t < 350) return;
     lastClick.current = { key, t: Date.now() };
-    // 展开该卡:平滑把块中心带到视口中心
+    // 展开该卡:从引擎矩形直接算 6×6 主卡中心(同步、无 DOM 依赖),镜头平滑聚焦
     if (picked?.bx === bx && picked?.by === by && picked?.slot === slot) {
+      // 收起:镜头回到块中心
       applyPicked(null);
+      const c = layout.blockCenter(bx, by);
+      glideTo(c.x, c.y);
       return;
     }
+    const hero = layout.heroRect(bx, by, slot);
     applyPicked({ bx, by, slot });
-    const t = tiles.find((tt) => tt.blockX === bx && tt.blockY === by && tt.slot === slot);
-    if (t) glideTo(t.x + t.w / 2, t.y + t.h / 2);
+    if (hero) glideTo(hero.cx, hero.cy);
   };
 
   const onWheel = (e: React.WheelEvent) => {
@@ -202,6 +218,15 @@ export default function InfiniteView() {
     const dy = e.shiftKey ? e.deltaX : e.deltaY;
     if (dx) schedulePan(tx - dx, ty);
     if (dy) schedulePan(tx, ty - dy);
+  };
+
+  // 滚轮平移/缩放期间禁用位置过渡(停轮 140ms 后恢复),展开重排才有动画
+  const wheelTimer = useRef<number | null>(null);
+  const onWheelAnim = (e: React.WheelEvent) => {
+    setAnimAllowed(false);
+    if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current);
+    wheelTimer.current = window.setTimeout(() => setAnimAllowed(true), 140);
+    onWheel(e);
   };
 
   const onTileDoubleClick = (e: React.MouseEvent, id: string) => {
@@ -227,7 +252,7 @@ export default function InfiniteView() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onWheel={onWheel}
+        onWheel={onWheelAnim}
       >
         {tiles.map((t) => {
           const key = `${t.blockX}:${t.blockY}:${t.slot}`;
@@ -244,17 +269,18 @@ export default function InfiniteView() {
                 width: t.w * z,
                 height: t.h * z,
                 zIndex: isPicked ? 20 : selected ? 5 : 1,
+                transition: animAllowed && !isPicked ? "transform 500ms cubic-bezier(.22,1,.36,1)" : "none",
               }}
               onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
             >
               <div
                 className="absolute inset-0 overflow-hidden"
                 style={{
-                  transition: "filter 400ms ease, box-shadow 400ms ease",
-                  filter: picked && !isPicked ? "brightness(0.8)" : "none",
-                  borderRadius: isPicked ? 2 : 0,
+                  transition: "filter 450ms ease, box-shadow 450ms ease, border-radius 450ms ease",
+                  filter: picked && !isPicked ? "brightness(0.72)" : "none",
+                  borderRadius: isPicked ? 3 : 0,
                   boxShadow: isPicked
-                    ? "0 0 0 1.2px rgba(255,255,255,.95), 0 10px 40px rgba(0,0,0,.4)"
+                    ? "0 0 0 1.5px rgba(255,255,255,.95), 0 0 0 5px rgba(255,255,255,.14), 0 24px 80px rgba(0,0,0,.6)"
                     : selected
                       ? "inset 0 0 0 2px rgba(167,139,250,.6)"
                       : "none",
