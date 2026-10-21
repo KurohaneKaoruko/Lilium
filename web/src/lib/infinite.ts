@@ -248,6 +248,38 @@ export class MosaicLayout {
                 h = Math.min(Math.max(w / aspect, stdH * 0.5), stdH * 1.5);
                 dy = (stdH - h) / 2;
               }
+            } else {
+              // hero 高度偏离标准 → 贴着 hero 上/下边的邻居平移贴合,消掉黑带
+              const hs = layout[expSlot];
+              const xOverlap = s.x < hs.x + hs.w && hs.x < s.x + s.w;
+              if (xOverlap) {
+                // hero 的实际高度(与展开分支同一公式)
+                const heroIdx = cellSlot - slot + expSlot;
+                const heroAspect = this.items[heroIdx % this.items.length].aspect;
+                const heroStdH = hs.h * this.pitch - this.gap;
+                const heroH = heroAspect > 0
+                  ? Math.min(Math.max((hs.w * this.pitch - this.gap) / heroAspect, heroStdH * 0.5), heroStdH * 1.5)
+                  : heroStdH;
+                const heroTopStd = by * g.blockHeight + hs.y * this.pitch;
+                const heroBotStd = heroTopStd + heroStdH;
+                const heroTop = heroTopStd + (heroStdH - heroH) / 2;
+                const heroBot = heroTop + heroH;
+                const y0 = by * g.blockHeight + s.y * this.pitch;
+                // 上邻:bottom 标准态贴 hero top
+                if (Math.abs(y0 + stdH - heroTopStd) < 1) {
+                  r = { x: bx * g.blockWidth + s.x * this.pitch, y: y0 + (heroTop - heroTopStd), w, h: stdH };
+                  this.emitted.add(key);
+                  this.tiles.push({ id, ...r, ring: by, blockX: bx, blockY: by, slot, expanded });
+                  continue;
+                }
+                // 下邻:top 标准态贴 hero bottom
+                if (Math.abs(y0 - heroBotStd) < 1) {
+                  r = { x: bx * g.blockWidth + s.x * this.pitch, y: y0 + (heroBot - heroBotStd), w, h: stdH };
+                  this.emitted.add(key);
+                  this.tiles.push({ id, ...r, ring: by, blockX: bx, blockY: by, slot, expanded });
+                  continue;
+                }
+              }
             }
             r = {
               x: bx * g.blockWidth + s.x * this.pitch,
