@@ -234,7 +234,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
           {/* 文件夹 */}
           <Section title="文件夹" action={<button className="btn !p-1" onClick={newFolder} title="新建文件夹"><FolderPlus size={13} /></button>}>
             <div className="px-1">
-              {tree.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">右键/按钮新建文件夹</div>}
+              {tree.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">右键/按钮新建文件夹</div>}
               {tree.map((n) => <FolderNode key={n.id} node={n} depth={0} />)}
             </div>
           </Section>
@@ -242,7 +242,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
           {/* 智能文件夹 */}
       <Section title="智能文件夹" action={<button className="btn !p-1" onClick={saveSmart} title="将当前筛选保存为智能文件夹"><Bookmark size={13} /></button>}>
         <div className="px-1">
-          {smartFolders.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">保存当前筛选条件，快速复用</div>}
+          {smartFolders.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">保存当前筛选条件，快速复用</div>}
           {smartFolders.map((sf) => (
             <div
               key={sf.id}
@@ -342,11 +342,11 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
                   <span className="text-[10px] text-neutral-600">{t.count}</span>
                 </div>
               ))}
-              {filteredTags.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">暂无标签</div>}
+              {filteredTags.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">暂无标签</div>}
             </div>
           </Section>
 
-          <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border">
+          <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border whitespace-nowrap overflow-hidden">
             Lilium · 本地优先的图片管理
           </div>
         </>
