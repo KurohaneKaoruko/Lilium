@@ -48,6 +48,7 @@ export default function CollectionsView() {
   const refreshMeta = useStore((s) => s.refreshMeta);
 
   const [tab, setTab] = useState<"folders" | "tags">("folders");
+  const [focusKey, setFocusKey] = useState<string | null>(null);
   void smartFolders;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -98,65 +99,86 @@ export default function CollectionsView() {
     }));
   }, [tab, folders, tags]);
 
-  const openCard = (c: Card, at?: { x: number; y: number }) => {
-    // 聚焦放大:镜头弹簧推向卡片世界位置并放大,落定后进入分类
-    if (at) {
-      const p = placed.find((q) => q.card.key === c.key);
-      if (p) {
-        const z1 = 1.35;
-        const endTx = size.w / 2 - p.x * z1;
-        const endTy = size.h / 2 - p.y * z1;
-        const dist = Math.hypot(endTx - cam.current.tx, endTy - cam.current.ty);
-        const ease = reflowCurve(Math.max(200, dist / z1));
-        stopCamAnim();
-        const from = { ...cam.current };
-        const t0 = performance.now();
-        const handle = setInterval(() => {
-          const prog = Math.min(1, (performance.now() - t0) / ease.durationMs);
-          const e = ease.ease(prog);
-          cam.current.tx = from.tx + (endTx - from.tx) * e;
-          cam.current.ty = from.ty + (endTy - from.ty) * e;
-          cam.current.z = from.z + (z1 - from.z) * e;
-          applyCamera();
-          if (prog >= 1) {
-            clearInterval(handle);
-            window.setTimeout(() => {
-              if (c.kind === "folder") {
-                setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
-              } else {
-                setFilters({ tag: c.id, folderId: null, trash: false });
-              }
-              useStore.setState({ view: "masonry" });
-              fetchItems();
-            }, 140);
-          }
-        }, 16);
-        camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
-        return;
-      }
-    }
-    if (c.kind === "folder") {
-      setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
-    } else {
-      setFilters({ tag: c.id, folderId: null, trash: false });
-    }
-    useStore.setState({ view: "masonry" });
-    fetchItems();
+  /** 镜头层 transform 直写(每帧) */
+  const applyCamera = useCallback(() => {
+    const el = worldRef.current;
+    if (!el) return;
+    const { tx, ty, z } = cam.current;
+    el.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${z.toFixed(4)})`;
+  }, []);
+
+  const stopCamAnim = () => {
+    if (camAnim.current?.handle != null) clearInterval(camAnim.current.handle);
+    camAnim.current = null;
   };
 
-  /** 卡片世界坐标:整齐网格,云质心在原点(少量卡片也居中) */
+  /** 聚焦镜头到某张卡(弹簧推近+放大);focusKey 为 null 时回中 */
+  const focusCard = useCallback(
+    (p: { x: number; y: number; scale: number } | null) => {
+      const z1 = p ? 1.3 : 0.9;
+      const wx = p ? p.x : 0;
+      const wy = p ? p.y : 0;
+      const endTx = size.w / 2 - wx * z1;
+      const endTy = size.h / 2 - wy * z1;
+      const dist = Math.hypot(endTx - cam.current.tx, endTy - cam.current.ty);
+      const ease = reflowCurve(Math.max(240, dist));
+      stopCamAnim();
+      const from = { ...cam.current };
+      const t0 = performance.now();
+      const handle = setInterval(() => {
+        const prog = Math.min(1, (performance.now() - t0) / ease.durationMs);
+        const e = ease.ease(prog);
+        cam.current.tx = from.tx + (endTx - from.tx) * e;
+        cam.current.ty = from.ty + (endTy - from.ty) * e;
+        cam.current.z = from.z + (z1 - from.z) * e;
+        applyCamera();
+        if (prog >= 1) clearInterval(handle);
+      }, 16);
+      camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
+    },
+    [size, applyCamera],
+  );
+
+  /** 点击卡片:聚焦放大该卡;再点一次收起;双击/再次点击已聚焦卡 → 进入分类 */
+  const openCard = (c: Card) => {
+    if (focusKey === c.key) {
+      // 已聚焦 → 进入分类
+      if (c.kind === "folder") {
+        setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
+      } else {
+        setFilters({ tag: c.id, folderId: null, trash: false });
+      }
+      setFocusKey(null);
+      useStore.setState({ view: "masonry" });
+      fetchItems();
+      return;
+    }
+    const p = placed.find((q) => q.card.key === c.key);
+    setFocusKey(c.key);
+    if (p) focusCard({ x: p.x + CARD_W / 2, y: p.y + CARD_H / 2, scale: p.scale });
+  };
+
+  /** 卡片世界坐标:错落有致 —— 网格保证不打架,哈希决定行内偏移/上下沉浮/大小层次 */
   const placed = useMemo(() => {
     const n = cards.length;
     const cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.4)));
     const rows = Math.ceil(n / cols);
     return cards.map((c, i) => {
+      const h = hash32(c.key);
       const gx = i % cols;
       const gy = Math.floor(i / cols);
+      // 行内错位:奇数行整体右移半格;卡自身再按哈希偏移(±26px 内,不会重叠)
+      const rowShift = (gy % 2) * (GRID_X / 2);
+      const jx = (((h >>> 8) % 100) / 100 - 0.5) * 52;
+      const jy = (((h >>> 16) % 100) / 100 - 0.5) * 46;
+      // 大小层次:哈希选三档缩放(0.86 / 1 / 1.14),近大远小的错落感
+      const scale = [0.86, 1, 1.14][(h >>> 24) % 3];
       return {
         card: c,
-        x: (gx - (cols - 1) / 2) * GRID_X,
-        y: (gy - (rows - 1) / 2) * GRID_Y,
-        h: hash32(c.key),
+        x: (gx - (cols - 1) / 2) * GRID_X + rowShift + jx,
+        y: (gy - (rows - 1) / 2) * GRID_Y + jy,
+        scale,
+        h,
       };
     });
   }, [cards]);
@@ -169,18 +191,6 @@ export default function CollectionsView() {
     ro.observe(el);
     setSize({ w: el.clientWidth, h: el.clientHeight });
   }, []);
-
-  const applyCamera = useCallback(() => {
-    const el = worldRef.current;
-    if (!el) return;
-    const { tx, ty, z } = cam.current;
-    el.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${z.toFixed(4)})`;
-  }, []);
-
-  const stopCamAnim = () => {
-    if (camAnim.current?.handle != null) clearInterval(camAnim.current.handle);
-    camAnim.current = null;
-  };
 
   /** 首帧:卡片云按视口居中 */
   const didCenterRef = useRef(false);
@@ -239,9 +249,10 @@ export default function CollectionsView() {
     camAnim.current.handle = handle;
   }, [applyCamera]);
 
-  // 切 tab(卡片集变化)→ 云重新居中
+  // 切 tab(卡片集变化)→ 清聚焦并回中
   useEffect(() => {
     if (!didCenterRef.current || size.w < 100) return;
+    setFocusKey(null);
     const ease = reflowCurve(600);
     const from = { ...cam.current };
     const to = { tx: size.w / 2, ty: size.h / 2 };
@@ -323,9 +334,16 @@ export default function CollectionsView() {
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const cardEl = el?.closest("[data-card]") as HTMLElement | null;
       const key = cardEl?.dataset.card;
-      if (!key) return;
+      if (!key) {
+        // 点空白:聚焦态下收起聚焦回中
+        if (focusKey) {
+          setFocusKey(null);
+          focusCard(null);
+        }
+        return;
+      }
       const card = cards.find((c) => c.key === key);
-      if (card) openCard(card, { x: e.clientX, y: e.clientY });
+      if (card) openCard(card);
     }
   };
 
@@ -344,6 +362,23 @@ export default function CollectionsView() {
     camAnim.current!.wx -= dx;
     camAnim.current!.wy -= dy;
   };
+
+  // Esc:聚焦态先取消聚焦回中(App 的 Esc 链先收侧栏,这里只在无侧栏时收聚焦)
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key !== "Escape") return;
+      const st = useStore.getState();
+      if (st.lightboxId || st.chromeLeft) return;
+      if (focusKey) {
+        setFocusKey(null);
+        focusCard(null);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [focusKey, focusCard]);
 
   return (
     <div className="relative flex-1 overflow-hidden bg-[#0c0d11] no-select">
@@ -400,66 +435,75 @@ export default function CollectionsView() {
           onWheel={onWheel}
         >
           <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
-            {placed.map(({ card: c, x, y, h }) => (
-              <div
-                key={c.key}
-                data-card={c.key}
-                className="absolute text-left group"
-                style={{
-                  left: x,
-                  top: y,
-                  width: CARD_W,
-                  zIndex: 10 + (h % 50),
-                }}
-              >
+            {placed.map(({ card: c, x, y, scale, h }) => {
+              const focused = focusKey === c.key;
+              const dimmed = focusKey !== null && !focused;
+              return (
                 <div
-                  className="rounded-2xl overflow-hidden border border-white/10 bg-panel/95 backdrop-blur pointer-events-auto
-                             shadow-[0_20px_50px_rgba(0,0,0,.5)] transition-all duration-300
-                             group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]
-                             group-hover:border-violet-400/40"
-                  style={{ transform: "translateZ(0)" }}
+                  key={c.key}
+                  data-card={c.key}
+                  className="absolute text-left group"
+                  style={{
+                    left: x,
+                    top: y,
+                    width: CARD_W,
+                    zIndex: focused ? 100 : 10 + (h % 50),
+                    transform: `scale(${focused ? 1.06 : scale})`,
+                    transformOrigin: "center center",
+                    filter: dimmed ? "brightness(.55) saturate(.8)" : undefined,
+                    opacity: dimmed ? 0.75 : 1,
+                    transition: "transform 450ms cubic-bezier(.22,1,.36,1), filter 350ms ease, opacity 350ms ease",
+                  }}
                 >
-                  <div className="h-[132px] relative overflow-hidden bg-[#181a20]">
-                    {c.cover ? (
-                      <img
-                        src={thumbUrl(c.cover)}
-                        alt=""
-                        loading="lazy"
-                        draggable={false}
-                        className="w-full h-full object-cover opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                      />
-                    ) : (
-                      <div
-                        className="w-full h-full flex items-center justify-center"
-                        style={{
-                          background:
-                            c.kind === "tag"
-                              ? `linear-gradient(135deg, ${c.color}44, #1a1c22)`
-                              : "linear-gradient(135deg, #232630, #1a1c22)",
-                        }}
-                      >
-                        {c.kind === "tag" ? (
-                          <Tag size={28} style={{ color: c.color ?? "#8b5cf6" }} />
-                        ) : (
-                          <FolderIcon size={30} className="text-neutral-600" />
-                        )}
+                  <div
+                    className={`rounded-2xl overflow-hidden border bg-panel/95 backdrop-blur pointer-events-auto transition-all duration-300 ${
+                      focused
+                        ? "border-violet-400/60 shadow-[0_30px_80px_rgba(0,0,0,.75)]"
+                        : "border-white/10 shadow-[0_20px_50px_rgba(0,0,0,.5)] group-hover:border-violet-400/40 group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]"
+                    }`}
+                  >
+                    <div className="h-[132px] relative overflow-hidden bg-[#181a20]">
+                      {c.cover ? (
+                        <img
+                          src={thumbUrl(c.cover)}
+                          alt=""
+                          loading="lazy"
+                          draggable={false}
+                          className="w-full h-full object-cover opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                        />
+                      ) : (
+                        <div
+                          className="w-full h-full flex items-center justify-center"
+                          style={{
+                            background:
+                              c.kind === "tag"
+                                ? `linear-gradient(135deg, ${c.color}44, #1a1c22)`
+                                : "linear-gradient(135deg, #232630, #1a1c22)",
+                          }}
+                        >
+                          {c.kind === "tag" ? (
+                            <Tag size={28} style={{ color: c.color ?? "#8b5cf6" }} />
+                          ) : (
+                            <FolderIcon size={30} className="text-neutral-600" />
+                          )}
+                        </div>
+                      )}
+                      {/* 数量角标 */}
+                      <div className="absolute left-2 top-2 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-neutral-200 border border-white/10">
+                        {c.count}
                       </div>
-                    )}
-                    {/* 数量角标 */}
-                    <div className="absolute left-2 top-2 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-neutral-200 border border-white/10">
-                      {c.count}
                     </div>
-                  </div>
-                  <div className="px-3 py-2.5">
-                    <div className="text-[13px] text-neutral-100 font-medium truncate flex items-center gap-1.5">
-                      {c.kind === "tag" && <Tag size={12} style={{ color: c.color }} className="shrink-0" />}
-                      <span className="truncate">{c.title}</span>
+                    <div className="px-3 py-2.5">
+                      <div className="text-[13px] text-neutral-100 font-medium truncate flex items-center gap-1.5">
+                        {c.kind === "tag" && <Tag size={12} style={{ color: c.color }} className="shrink-0" />}
+                        <span className="truncate">{c.title}</span>
+                      </div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">{c.sub}</div>
                     </div>
-                    <div className="text-[11px] text-neutral-500 mt-0.5">{c.sub}</div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -468,7 +512,7 @@ export default function CollectionsView() {
       <div className="absolute bottom-3 inset-x-0 h-10 flex items-center justify-center pointer-events-none">
         <div className="bg-black/45 backdrop-blur border border-white/10 rounded-full px-3 py-1 text-[11px] text-neutral-400 flex items-center gap-1.5">
           <ChevronLeft size={11} />
-          拖拽漫游 · 点击卡片进入分类浏览
+          点击聚焦卡片 · 再点进入 · 拖拽漫游
         </div>
       </div>
     </div>
