@@ -279,7 +279,7 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
       >
         {/* 完整侧栏:始终挂载,张开后显现(收起时被容器裁掉、不可点) */}
         <div
-          className="absolute inset-y-0 left-0 w-56 pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60"
+          className="absolute inset-y-0 left-0 w-56 bg-panel/85 backdrop-blur-md border-r border-border/60"
           style={{
             opacity: chromeLeft ? 1 : 0,
             pointerEvents: chromeLeft ? "auto" : "none",
@@ -312,7 +312,7 @@ function MiniRail({ collapsed }: { collapsed: boolean }) {
 
   return (
     <div
-      className="absolute inset-y-0 left-0 w-12 pt-11 bg-panel/85 backdrop-blur-md flex flex-col items-center py-2 gap-1"
+      className="absolute inset-y-0 left-0 w-12 bg-panel/85 backdrop-blur-md flex flex-col items-center py-2 gap-1"
       style={{
         opacity: collapsed ? 0 : 1,
         pointerEvents: collapsed ? "none" : "auto",
