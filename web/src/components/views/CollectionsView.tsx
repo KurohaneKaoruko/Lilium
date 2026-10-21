@@ -48,14 +48,18 @@ export default function CollectionsView() {
   const refreshMeta = useStore((s) => s.refreshMeta);
 
   const [tab, setTab] = useState<"folders" | "tags">("folders");
-  const [focusKey, setFocusKey] = useState<string | null>(null);
   void smartFolders;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const sizeRef = useRef({ w: 0, h: 0 });
   const cam = useRef({ tx: 0, ty: 0, z: 1 });
   const [renderTick, forceRender] = useState(0);
+  /** 当前聚焦卡 key(applyCamera 每帧读取) */
+  const focusKeyRef = useRef<string | null>(null);
+  /** 深度趟的元素缓存(key → 卡中心世界坐标) */
+  const depthElsRef = useRef<{ el: HTMLElement; x: number; y: number }[]>([]);
 
   const camAnim = useRef<{
     handle: number | null;
@@ -105,6 +109,33 @@ export default function CollectionsView() {
     if (!el) return;
     const { tx, ty, z } = cam.current;
     el.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, 0) scale(${z.toFixed(4)})`;
+    // 近大远小:卡中心离视口中心越远越小越淡;聚焦卡永远满档
+    const fk = focusKeyRef.current;
+    const { w, h } = sizeRef.current;
+    if (w > 0 && depthElsRef.current.length) {
+      const cx = w / 2;
+      const cy = h / 2;
+      for (const { el: cel, x, y } of depthElsRef.current) {
+        // 卡中心在屏幕上的位置
+        const sx = x * z + tx;
+        const sy = y * z + ty;
+        const dx = (sx - cx) / (w * 0.5);
+        const d = Math.sqrt(dx * dx + ((sy - cy) / (h * 0.5)) ** 2);
+        const near = Math.max(0, 1 - d / 1.55);
+        if (fk != null && cel.dataset.card === fk) {
+          cel.style.zIndex = "100";
+          cel.style.transform = "scale(1)";
+          cel.style.filter = "brightness(1)";
+          cel.style.opacity = "1";
+          continue;
+        }
+        const sc = 0.62 + 0.38 * near;
+        cel.style.transform = `scale(${sc.toFixed(3)})`;
+        cel.style.filter = `brightness(${(0.55 + 0.45 * near).toFixed(3)})`;
+        cel.style.opacity = (0.5 + 0.5 * near).toFixed(3);
+        cel.style.zIndex = fk != null ? "1" : String(1 + Math.round(near * 98));
+      }
+    }
   }, []);
 
   const stopCamAnim = () => {
@@ -112,14 +143,15 @@ export default function CollectionsView() {
     camAnim.current = null;
   };
 
-  /** 聚焦镜头到某张卡(弹簧推近+放大);focusKey 为 null 时回中 */
+  /** 聚焦镜头到某张卡(弹簧推近+放大);p 为 null 时回中 */
   const focusCard = useCallback(
-    (p: { x: number; y: number; scale: number } | null) => {
+    (p: { x: number; y: number } | null) => {
+      const { w, h } = sizeRef.current;
       const z1 = p ? 1.3 : 0.9;
       const wx = p ? p.x : 0;
       const wy = p ? p.y : 0;
-      const endTx = size.w / 2 - wx * z1;
-      const endTy = size.h / 2 - wy * z1;
+      const endTx = w / 2 - wx * z1;
+      const endTy = h / 2 - wy * z1;
       const dist = Math.hypot(endTx - cam.current.tx, endTy - cam.current.ty);
       const ease = reflowCurve(Math.max(240, dist));
       stopCamAnim();
@@ -136,29 +168,41 @@ export default function CollectionsView() {
       }, 16);
       camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
     },
-    [size, applyCamera],
+    [applyCamera],
   );
 
-  /** 点击卡片:聚焦放大该卡;再点一次收起;双击/再次点击已聚焦卡 → 进入分类 */
+  /** 设置聚焦卡(视觉由 applyCamera 深度趟统一驱动) */
+  const setFocused = useCallback(
+    (key: string | null) => {
+      focusKeyRef.current = key;
+      if (key == null) {
+        focusCard(null);
+        return;
+      }
+      const p = placedByKeyRef.current.get(key);
+      if (p) focusCard({ x: p.x + CARD_W / 2, y: p.y + CARD_H / 2 });
+    },
+    [focusCard],
+  );
+
+  /** 点击卡片:聚焦放大该卡;再点一次进入;聚焦态点别的卡 → 切换聚焦;点空白收起 */
   const openCard = (c: Card) => {
-    if (focusKey === c.key) {
+    if (focusKeyRef.current === c.key) {
       // 已聚焦 → 进入分类
       if (c.kind === "folder") {
         setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
       } else {
         setFilters({ tag: c.id, folderId: null, trash: false });
       }
-      setFocusKey(null);
+      focusKeyRef.current = null;
       useStore.setState({ view: "masonry" });
       fetchItems();
       return;
     }
-    const p = placed.find((q) => q.card.key === c.key);
-    setFocusKey(c.key);
-    if (p) focusCard({ x: p.x + CARD_W / 2, y: p.y + CARD_H / 2, scale: p.scale });
+    setFocused(c.key);
   };
 
-  /** 卡片世界坐标:错落有致 —— 网格保证不打架,哈希决定行内偏移/上下沉浮/大小层次 */
+  /** 卡片世界坐标:错落有致 —— 网格保证不打架,哈希决定行内偏移/上下沉浮;大小交给近大远小 */
   const placed = useMemo(() => {
     const n = cards.length;
     const cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.4)));
@@ -171,26 +215,32 @@ export default function CollectionsView() {
       const rowShift = (gy % 2) * (GRID_X / 2);
       const jx = (((h >>> 8) % 100) / 100 - 0.5) * 52;
       const jy = (((h >>> 16) % 100) / 100 - 0.5) * 46;
-      // 大小层次:哈希选三档缩放(0.86 / 1 / 1.14),近大远小的错落感
-      const scale = [0.86, 1, 1.14][(h >>> 24) % 3];
       return {
         card: c,
         x: (gx - (cols - 1) / 2) * GRID_X + rowShift + jx,
         y: (gy - (rows - 1) / 2) * GRID_Y + jy,
-        scale,
-        h,
       };
     });
   }, [cards]);
+
+  const placedByKey = useMemo(() => new Map(placed.map((p) => [p.card.key, p])), [placed]);
+  // 稳定访问(setFocused 的 useCallback 依赖里不放 placedByKey)
+  const placedByKeyRef = useRef(placedByKey);
+  placedByKeyRef.current = placedByKey;
 
   // 视口测量:callback ref 挂载即观察
   const attachContainer = useCallback((el: HTMLDivElement | null) => {
     containerRef.current = el;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      sizeRef.current = { w: el.clientWidth, h: el.clientHeight };
+      setSize(sizeRef.current);
+      applyCamera();
+    });
     ro.observe(el);
-    setSize({ w: el.clientWidth, h: el.clientHeight });
-  }, []);
+    sizeRef.current = { w: el.clientWidth, h: el.clientHeight };
+    setSize(sizeRef.current);
+  }, [applyCamera]);
 
   /** 首帧:卡片云按视口居中 */
   const didCenterRef = useRef(false);
@@ -252,7 +302,7 @@ export default function CollectionsView() {
   // 切 tab(卡片集变化)→ 清聚焦并回中
   useEffect(() => {
     if (!didCenterRef.current || size.w < 100) return;
-    setFocusKey(null);
+    focusKeyRef.current = null;
     const ease = reflowCurve(600);
     const from = { ...cam.current };
     const to = { tx: size.w / 2, ty: size.h / 2 };
@@ -274,6 +324,15 @@ export default function CollectionsView() {
   }, [tab, size, applyCamera]);
 
   useEffect(() => () => stopCamAnim(), []);
+
+  // 每次渲染后:清理已卸载卡片的深度缓存,并立即直写一帧(近大远小即时呈现)
+  useEffect(() => {
+    const list = depthElsRef.current;
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (!list[i].el.isConnected) list.splice(i, 1);
+    }
+    applyCamera();
+  });
 
   /** 墙面交互 → 收回左栏(与无限视图一致) */
   const wallInteract = useCallback(() => {
@@ -336,8 +395,8 @@ export default function CollectionsView() {
       const key = cardEl?.dataset.card;
       if (!key) {
         // 点空白:聚焦态下收起聚焦回中
-        if (focusKey) {
-          setFocusKey(null);
+        if (focusKeyRef.current) {
+          focusKeyRef.current = null;
           focusCard(null);
         }
         return;
@@ -371,14 +430,14 @@ export default function CollectionsView() {
       if (e.key !== "Escape") return;
       const st = useStore.getState();
       if (st.lightboxId || st.chromeLeft) return;
-      if (focusKey) {
-        setFocusKey(null);
+      if (focusKeyRef.current) {
+        focusKeyRef.current = null;
         focusCard(null);
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [focusKey, focusCard]);
+  }, [focusCard]);
 
   return (
     <div className="relative flex-1 overflow-hidden bg-[#0c0d11] no-select">
@@ -435,34 +494,40 @@ export default function CollectionsView() {
           onWheel={onWheel}
         >
           <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
-            {placed.map(({ card: c, x, y, scale, h }) => {
-              const focused = focusKey === c.key;
-              const dimmed = focusKey !== null && !focused;
-              return (
+            {placed.map(({ card: c, x, y }) => (
+              <div
+                key={c.key}
+                data-card={c.key}
+                ref={(el) => {
+                  if (!el) return;
+                  // 深度趟需要卡中心世界坐标(left/top 是左上角)
+                  const list = depthElsRef.current;
+                  const entry = list.find((q) => q.el === el);
+                  const cx = x + CARD_W / 2;
+                  const cy = y + CARD_H / 2;
+                  if (entry) {
+                    entry.x = cx;
+                    entry.y = cy;
+                  } else {
+                    list.push({ el, x: cx, y: cy });
+                  }
+                }}
+                className="absolute text-left group"
+                style={{
+                  left: x,
+                  top: y,
+                  width: CARD_W,
+                  transformOrigin: "center center",
+                  // 大小/明暗/z 序由 applyCamera 每帧直写(近大远小)
+                  transition: "filter 120ms linear, opacity 120ms linear",
+                }}
+              >
                 <div
-                  key={c.key}
-                  data-card={c.key}
-                  className="absolute text-left group"
-                  style={{
-                    left: x,
-                    top: y,
-                    width: CARD_W,
-                    zIndex: focused ? 100 : 10 + (h % 50),
-                    transform: `scale(${focused ? 1.06 : scale})`,
-                    transformOrigin: "center center",
-                    filter: dimmed ? "brightness(.55) saturate(.8)" : undefined,
-                    opacity: dimmed ? 0.75 : 1,
-                    transition: "transform 450ms cubic-bezier(.22,1,.36,1), filter 350ms ease, opacity 350ms ease",
-                  }}
+                  className="rounded-2xl overflow-hidden border border-white/10 bg-panel/95 backdrop-blur pointer-events-auto
+                             shadow-[0_20px_50px_rgba(0,0,0,.5)] transition-colors duration-200
+                             group-hover:border-violet-400/40 group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]"
                 >
-                  <div
-                    className={`rounded-2xl overflow-hidden border bg-panel/95 backdrop-blur pointer-events-auto transition-all duration-300 ${
-                      focused
-                        ? "border-violet-400/60 shadow-[0_30px_80px_rgba(0,0,0,.75)]"
-                        : "border-white/10 shadow-[0_20px_50px_rgba(0,0,0,.5)] group-hover:border-violet-400/40 group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]"
-                    }`}
-                  >
-                    <div className="h-[132px] relative overflow-hidden bg-[#181a20]">
+                  <div className="h-[132px] relative overflow-hidden bg-[#181a20]">
                       {c.cover ? (
                         <img
                           src={thumbUrl(c.cover)}
@@ -502,8 +567,7 @@ export default function CollectionsView() {
                     </div>
                   </div>
                 </div>
-              );
-            })}
+              ))}
           </div>
         </div>
       )}
