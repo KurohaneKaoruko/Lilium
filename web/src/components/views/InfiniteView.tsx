@@ -270,6 +270,31 @@ export default function InfiniteView() {
     );
   }
 
+  // 选中卡的放大倍率与推开矩形（对 map 内所有瓦片一致可用）：
+  // 倍率约 72% 视口高、52% 视口宽封顶；推开矩形 = 放大后的世界矩形 + pad 空隙
+  const pickScale = useMemo(() => {
+    if (!nearestPickedTile) return 1;
+    const sh = nearestPickedTile.h * z;
+    const sw = nearestPickedTile.w * z;
+    return Math.min(4, Math.max(1.15, Math.min((size.h * 0.72) / sh, (size.w * 0.52) / sw)));
+  }, [nearestPickedTile, z, size]);
+
+  const expand = useMemo(() => {
+    if (!nearestPickedTile || pickScale <= 1) return null;
+    const P = nearestPickedTile;
+    const ew = P.w * pickScale;
+    const eh = P.h * pickScale;
+    return {
+      ex: P.x - (ew - P.w) / 2,
+      ey: P.y - (eh - P.h) / 2,
+      ew,
+      eh,
+      cx: P.x + P.w / 2,
+      cy: P.y + P.h / 2,
+      pad: 24,
+    };
+  }, [nearestPickedTile, pickScale]);
+
   return (
     <div className="relative flex-1 overflow-hidden bg-[#0a0b0f] no-select">
       {/* 画布：图片密铺填满整屏 */}
@@ -286,31 +311,17 @@ export default function InfiniteView() {
           const picked = t === nearestPickedTile;
           const selected = selection.has(t.id);
           const key = `${t.id}#${Math.round(t.x)}x${Math.round(t.y)}`;
-          // 选中放大倍率：约 72% 视口高、52% 视口宽封顶（对齐参考的展示占比）
-          let pickScale = 1;
-          if (picked) {
-            const sh = t.h * z;
-            const sw = t.w * z;
-            pickScale = Math.min(
-              4,
-              Math.max(1.15, Math.min((size.h * 0.72) / sh, (size.w * 0.52) / sw)),
-            );
-          }
-          // 推开：与选中卡扩展矩形相交的邻居沿主导轴推出，留出呼吸空隙
+          // 推开：与选中卡放大矩形相交的邻居沿主导轴推出，留出呼吸空隙
           let dx = 0;
           let dy = 0;
-          if (nearestPickedTile && !picked && pickScale > 1) {
-            const P = nearestPickedTile;
-            const ex = P.x - (P.w * (pickScale - 1)) / 2;
-            const ey = P.y - (P.h * (pickScale - 1)) / 2;
-            const ew = P.w * pickScale;
-            const eh = P.h * pickScale;
-            const ox = Math.min(t.x + t.w, ex + ew) - Math.max(t.x, ex);
-            const oy = Math.min(t.y + t.h, ey + eh) - Math.max(t.y, ey);
-            const PAD = 24; // 选中卡四周额外空隙（世界单位）
+          if (expand && !picked) {
+            const ex = expand.ex;
+            const ey = expand.ey;
+            const ox = Math.min(t.x + t.w, ex + expand.ew) - Math.max(t.x, ex);
+            const oy = Math.min(t.y + t.h, ey + expand.eh) - Math.max(t.y, ey);
             if (ox > 0 && oy > 0) {
-              if (ox <= oy) dx = t.x + t.w / 2 < ex + ew / 2 ? -(ox + PAD) : ox + PAD;
-              else dy = t.y + t.h / 2 < ey + eh / 2 ? -(oy + PAD) : oy + PAD;
+              if (ox <= oy) dx = t.x + t.w / 2 < expand.cx ? -(ox + expand.pad) : ox + expand.pad;
+              else dy = t.y + t.h / 2 < expand.cy ? -(oy + expand.pad) : oy + expand.pad;
             }
           }
           return (
