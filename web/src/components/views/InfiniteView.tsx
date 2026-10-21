@@ -445,7 +445,7 @@ export default function InfiniteView() {
                 key={key}
                 data-tile={t.id}
                 data-key={key}
-                className="absolute"
+                className={`absolute tile-outer ${isPicked ? "" : ""}`}
                 style={{
                   left: t.x,
                   top: t.y,
@@ -476,7 +476,7 @@ export default function InfiniteView() {
                     alt=""
                     loading="lazy"
                     draggable={false}
-                    className={`w-full h-full object-cover pointer-events-none ${isPicked ? "" : "tile-img"}`}
+                    className="w-full h-full object-cover pointer-events-none"
                     style={{ backgroundColor: "#15171c" }}
                   />
                 </div>
