@@ -199,8 +199,11 @@ export default function InfiniteView() {
     setSize({ w: el.clientWidth, h: el.clientHeight });
   }, []);
 
-  // 布局引擎实例
-  const layout = useMemo(() => buildMosaic(items.map((it) => ({ id: it.id, aspect: 1 }))), [items]);
+  // 布局引擎实例(带真实纵横比,展开卡按原图比例显示)
+  const layout = useMemo(
+    () => buildMosaic(items.map((it) => ({ id: it.id, aspect: it.width && it.height ? it.width / it.height : 1 }))),
+    [items],
+  );
 
   /** 刚发生过展开/收起 → 瓦片布局属性带弹簧过渡;起止状态稳定后移除 */
   const [reflowing, setReflowing] = useState(false);

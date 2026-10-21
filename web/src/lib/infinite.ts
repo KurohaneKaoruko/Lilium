@@ -237,11 +237,23 @@ export class MosaicLayout {
           let expanded = false;
           if (layout) {
             const s = layout[slot];
+            const w = s.w * this.pitch - this.gap;
+            const stdH = s.h * this.pitch - this.gap;
+            let h = stdH;
+            let dy = 0;
+            if (slot === expSlot) {
+              // 展开卡按图片原始纵横比调高(宽 6 格固定):竖图更高、横图更矮,垂直居中
+              const aspect = this.items[cellSlot % this.items.length].aspect;
+              if (aspect > 0) {
+                h = Math.min(Math.max(w / aspect, stdH * 0.5), stdH * 1.5);
+                dy = (stdH - h) / 2;
+              }
+            }
             r = {
               x: bx * g.blockWidth + s.x * this.pitch,
-              y: by * g.blockHeight + s.y * this.pitch,
-              w: s.w * this.pitch - this.gap,
-              h: s.h * this.pitch - this.gap,
+              y: by * g.blockHeight + s.y * this.pitch + dy,
+              w,
+              h,
             };
             expanded = slot === expSlot;
           } else {
