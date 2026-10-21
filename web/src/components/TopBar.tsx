@@ -83,12 +83,16 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
       {/* 沉浸模式下左端留出 mac 风格拖拽区(外层已有 data-tauri-drag-region 的按钮排) */}
       {immersive && <div className="w-2 shrink-0 self-stretch" data-tauri-drag-region />}
       {/* 视图切换 */}
-      <div className="flex items-center bg-panel2 rounded-md p-0.5 border border-border">
+      <div className="flex items-center bg-panel2 rounded-lg p-1 border border-border gap-0.5">
         {VIEWS.map((v) => (
           <button
             key={v.key}
             title={v.label}
-            className={`px-2 py-1 rounded ${view === v.key ? "bg-violet-500/25 text-violet-200" : "text-neutral-400 hover:text-neutral-200"}`}
+            className={`px-2.5 py-1.5 rounded-md transition-colors ${
+              view === v.key
+                ? "bg-violet-500/30 text-violet-200 shadow-sm"
+                : "text-neutral-400 hover:text-neutral-200 hover:bg-white/5"
+            }`}
             onClick={() => setView(v.key)}
           >
             {v.icon}

@@ -216,7 +216,7 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           <WindowControls />
         </div>
       </div>
-      {/* 左栏:同一个容器 —— 收起 = 48px 图标轨,悬停时原地张开成 224px 完整侧栏 */}
+      {/* 左栏:收起 = 48px 图标轨(从屏幕顶开始);张开 = 224px 完整侧栏(顶栏下方,不被遮挡) */}
       <div
         data-chrome-left
         onPointerEnter={() => {
@@ -231,10 +231,11 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           boxShadow: "8px 0 24px rgba(0,0,0,.25)",
         }}
       >
-        {/* 完整侧栏:固定 224px 宽,收起时向左滑 176px(224-48)藏进裁剪区,叠交叉淡化 */}
+        {/* 完整侧栏:顶栏下方起,收起时向左滑 176px(224-48)藏进裁剪区,叠交叉淡化 */}
         <div
-          className="absolute inset-y-0 left-0 w-56 bg-panel/85 backdrop-blur-md border-r border-border/60"
+          className="absolute left-0 right-0 bottom-0 w-56 bg-panel/85 backdrop-blur-md border-r border-border/60"
           style={{
+            top: 44,
             transform: chromeLeft ? "translateX(0)" : "translateX(-176px)",
             opacity: chromeLeft ? 1 : 0,
             pointerEvents: chromeLeft ? "auto" : "none",
