@@ -9,9 +9,10 @@ import { buildMosaic, type MosaicLayout, type WorldTile } from "../../lib/infini
  *
  * - 全屏接管：顶栏/侧栏/详情面板隐藏，Esc 或左上角按钮退出
  * - 瓦片按纵横比完整显示整张图片，素材循环取模，任何方向都密铺到底
- * - 画布式交互：滚轮平移（Shift+滚轮横向）、Ctrl+滚轮缩放、拖拽自由平移，不锁定镜头
- * - 单击瓦片：该图放大强调（白描边 + 投影），再点一次还原；双击打开大图
- * - ←/→ 步进放大目标（仅在目标不可见时才平移镜头）
+ * - 画布式交互：滚轮平移（Shift+滚轮横向）、Ctrl+滚轮缩放、拖拽自由平移
+ * - 单击瓦片：镜头平滑居中并放大为「当前展示」卡（约 2/3 视口高，细白描边），
+ *   其余图片压暗；再点一次还原；双击打开大图
+ * - ←/→ 步进展示目标
  */
 export default function InfiniteView() {
   const items = useStore((s) => s.items);
@@ -77,24 +78,24 @@ export default function InfiniteView() {
     [tx, ty, z, size],
   );
 
-  /** 放大某张卡片。单击场景绝不移动镜头；步进场景仅当目标与视口交叠 <25% 时才平移带过来 */
+  /** 选中呈现：镜头平滑居中该图，配合内层放大到接近参考的展示尺寸 */
   const pickTile = useCallback(
-    (id: string, opts?: { step?: boolean }) => {
-      setPickedId(id);
-      if (!opts?.step) return;
+    (id: string, opts?: { instant?: boolean }) => {
       const tile = layout.allTiles().find((t) => t.id === id);
+      setPickedId(id);
       if (!tile) return;
-      const sx = tile.x * z + tx;
-      const sy = tile.y * z + ty;
-      const sw = tile.w * z;
-      const sh = tile.h * z;
-      const ix = Math.max(0, Math.min(sx + sw, size.w) - Math.max(sx, 0));
-      const iy = Math.max(0, Math.min(sy + sh, size.h) - Math.max(sy, 0));
-      if (sw * sh > 0 && (ix * iy) / (sw * sh) < 0.25) {
+      if (opts?.instant) {
+        if (animRef.current !== null) {
+          cancelAnimationFrame(animRef.current);
+          animRef.current = null;
+        }
+        setTx(size.w / 2 - (tile.x + tile.w / 2) * z);
+        setTy(size.h / 2 - (tile.y + tile.h / 2) * z);
+      } else {
         glideTo(tile.x + tile.w / 2, tile.y + tile.h / 2);
       }
     },
-    [layout, glideTo, z, tx, ty, size],
+    [layout, glideTo, z, size],
   );
 
   /** 下一个放大目标（items 顺序，循环） */
@@ -103,7 +104,7 @@ export default function InfiniteView() {
       if (orderedIds.length === 0) return;
       let idx = pickedId ? orderedIds.indexOf(pickedId) : -1;
       idx = (idx + dir + orderedIds.length) % orderedIds.length;
-      pickTile(orderedIds[idx], { step: true });
+      pickTile(orderedIds[idx]);
     },
     [orderedIds, pickedId, pickTile],
   );
@@ -153,7 +154,7 @@ export default function InfiniteView() {
     for (const t of tiles) consider(t);
     // 完全不在视野时，回退到全局最近实例（保证 ←/→ 步进有落点）
     if (!best) for (const t of layout.allTiles()) consider(t);
-    return best;
+    return best as WorldTile | null;
   }, [tiles, layout, pickedId, tx, ty, z, size]);
 
   // 键盘：←/→ 步进放大目标，Esc 退出
@@ -285,6 +286,16 @@ export default function InfiniteView() {
           const picked = t === nearestPickedTile;
           const selected = selection.has(t.id);
           const key = `${t.id}#${Math.round(t.x)}x${Math.round(t.y)}`;
+          // 选中放大倍率：约 66% 视口高、55% 视口宽封顶，限制在 1.15–4
+          let pickScale = 1;
+          if (picked) {
+            const sh = t.h * z;
+            const sw = t.w * z;
+            pickScale = Math.min(
+              4,
+              Math.max(1.15, Math.min((size.h * 0.66) / sh, (size.w * 0.55) / sw)),
+            );
+          }
           return (
             <div
               key={key}
@@ -300,15 +311,15 @@ export default function InfiniteView() {
             >
               {/* 内层负责缩放动画：只有被选中的那张动，平移始终零延迟 */}
               <div
-                className="absolute inset-0 overflow-hidden transition-[transform,opacity,box-shadow,filter] duration-300 ease-out"
+                className="absolute inset-0 overflow-hidden transition-[transform,opacity,box-shadow,filter] duration-500 ease-out"
                 style={{
-                  transform: `scale(${picked ? 1.3 : 1})`,
+                  transform: `scale(${picked ? pickScale : 1})`,
                   transformOrigin: "center",
-                  opacity: picked ? 1 : 0.85,
-                  filter: picked ? "none" : "brightness(0.72)",
+                  opacity: pickedId ? (picked ? 1 : 0.62) : 0.92,
+                  filter: pickedId && !picked ? "brightness(0.5)" : "none",
                   borderRadius: picked ? 4 : 0,
                   boxShadow: picked
-                    ? "0 0 0 1.5px rgba(255,255,255,.95), 0 26px 90px rgba(0,0,0,.8), 0 8px 30px rgba(0,0,0,.55)"
+                    ? "0 0 0 1.5px rgba(255,255,255,.9), 0 24px 70px rgba(0,0,0,.5)"
                     : selected
                       ? "inset 0 0 0 2px rgba(167,139,250,.6)"
                       : "none",
