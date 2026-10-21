@@ -54,7 +54,7 @@ export default function App() {
       }
       if (e.key === "Escape") {
         if (st.lightboxId) return; // Lightbox 自己处理
-        if (st.view === "infinite") { st.setView("masonry"); return; }
+        if (st.view === "infinite") return; // 无限视图自己处理:先收起,再退出
         st.clearSelection();
         st.setDetail(null);
       }
