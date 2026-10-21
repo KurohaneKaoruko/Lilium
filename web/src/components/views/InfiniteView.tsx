@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { useStore } from "../../store/useStore";
-import { itemAspectRatio, thumbUrl } from "../../api/client";
-import { buildMosaic, type MosaicLayout, type WorldTile } from "../../lib/infinite";
+import { thumbUrl } from "../../api/client";
+import {
+  buildMosaic,
+  type MosaicLayout,
+  type WorldTile,
+} from "../../lib/infinite";
 
 /**
- * 无限视图（全屏沉浸画布）：封面墙铺满整个屏幕。
+ * 无限视图(全屏沉浸封面墙,沉浸式封面墙):
  *
- * - 全屏接管：顶栏/侧栏/详情面板隐藏，Esc 或左上角按钮退出
- * - 瓦片按纵横比完整显示整张图片，素材循环取模，任何方向都密铺到底
- * - 画布式交互：滚轮平移（Shift+滚轮横向）、Ctrl+滚轮缩放、拖拽自由平移
- * - 单击瓦片：镜头平滑居中并放大为「当前展示」卡（约 2/3 视口高，细白描边），
- *   其余图片压暗；再点一次还原；双击打开大图
- * - ←/→ 步进展示目标
+ * - 周期点阵密铺:12×8 块精确铺满,素材循环取模,任何方向平移都无缝
+ * - 滚轮平移(Shift 横向)、Ctrl+滚轮缩放、拖拽自由平移
+ * - 单击卡片:同块 11 卡「换挡重排」,该卡放大为 6×6,块内依旧精确铺满
+ *   —— 不悬浮、不推开、无黑洞;再点一次还原
+ * - 双击打开大图;Esc 或左上角按钮退出
  */
 export default function InfiniteView() {
   const items = useStore((s) => s.items);
@@ -26,17 +29,15 @@ export default function InfiniteView() {
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
   const [z, setZ] = useState(1);
-  /** 当前放大强调的卡片 id */
-  const [pickedId, setPickedId] = useState<string | null>(null);
+  /** 展开中的实例 */
+  const [picked, setPicked] = useState<{ bx: number; by: number; slot: number } | null>(null);
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingPan = useRef<{ tx: number; ty: number } | null>(null);
-  /** 镜头平滑动画 */
   const animRef = useRef<number | null>(null);
-  /** 防止双击时第二次单击把刚放大的图还原 */
-  const lastClick = useRef<{ id: string; t: number } | null>(null);
+  const lastClick = useRef<{ key: string; t: number } | null>(null);
 
-  // 量取视口尺寸
+  // 视口尺寸
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -46,15 +47,22 @@ export default function InfiniteView() {
     return () => ro.disconnect();
   }, []);
 
-  const layout: MosaicLayout = useMemo(
-    () => buildMosaic(items.map((it) => ({ id: it.id, aspect: itemAspectRatio(it) }))),
-    [items],
-  );
+  // 布局引擎实例;picked 变化同步给引擎(影响块内重排)
+  const layoutRef = useRef<MosaicLayout | null>(null);
+  const layout = useMemo(() => {
+    const l = buildMosaic(items.map((it) => ({ id: it.id, aspect: 1 })));
+    layoutRef.current = l;
+    return l;
+  }, [items]);
 
-  /** 步进顺序 = items 顺序 */
-  const orderedIds = useMemo(() => items.map((i) => i.id), [items]);
+  useEffect(() => {
+    const l = layoutRef.current;
+    if (!l) return;
+    if (picked) l.setExpanded(picked.bx, picked.by, picked.slot);
+    else l.clearExpanded();
+  }, [picked, layout]);
 
-  /** 把世界坐标 (wx,wy) 平滑移到屏幕中心 */
+  /** 平滑居中世界点 */
   const glideTo = useCallback(
     (wx: number, wy: number) => {
       if (animRef.current !== null) cancelAnimationFrame(animRef.current);
@@ -63,7 +71,7 @@ export default function InfiniteView() {
       const endTx = size.w / 2 - wx * z;
       const endTy = size.h / 2 - wy * z;
       const t0 = performance.now();
-      const dur = 550;
+      const dur = 500;
       const ease = (t: number) => 1 - Math.pow(1 - t, 3);
       const step = (now: number) => {
         const p = Math.min(1, (now - t0) / dur);
@@ -78,102 +86,40 @@ export default function InfiniteView() {
     [tx, ty, z, size],
   );
 
-  /** 选中呈现：镜头平滑居中该图，配合内层放大到接近参考的展示尺寸 */
-  const pickTile = useCallback(
-    (id: string, opts?: { instant?: boolean }) => {
-      const tile = layout.allTiles().find((t) => t.id === id);
-      setPickedId(id);
-      if (!tile) return;
-      if (opts?.instant) {
-        if (animRef.current !== null) {
-          cancelAnimationFrame(animRef.current);
-          animRef.current = null;
-        }
-        setTx(size.w / 2 - (tile.x + tile.w / 2) * z);
-        setTy(size.h / 2 - (tile.y + tile.h / 2) * z);
-      } else {
-        glideTo(tile.x + tile.w / 2, tile.y + tile.h / 2);
-      }
-    },
-    [layout, glideTo, z, size],
-  );
-
-  /** 下一个放大目标（items 顺序，循环） */
-  const stepPick = useCallback(
-    (dir: 1 | -1) => {
-      if (orderedIds.length === 0) return;
-      let idx = pickedId ? orderedIds.indexOf(pickedId) : -1;
-      idx = (idx + dir + orderedIds.length) % orderedIds.length;
-      pickTile(orderedIds[idx]);
-    },
-    [orderedIds, pickedId, pickTile],
-  );
-
-  // 首帧：画布基准缩放（按视口高度定密度），并把第一张放到中心，不做动画
+  // 首帧:按视口定缩放,把原点块放到中心
   const didCenterRef = useRef(false);
   useEffect(() => {
     if (didCenterRef.current || size.w < 100 || !containerRef.current) return;
-    const first = items[0];
-    if (!first) return;
-    const tile = layout.allTiles().find((t) => t.id === first.id);
-    if (!tile) return;
     didCenterRef.current = true;
-    const z0 = Math.min(1.8, Math.max(0.55, size.h / 1150));
+    const z0 = Math.min(1.6, Math.max(0.5, size.h / 1000));
     setZ(z0);
-    setTx(size.w / 2 - (tile.x + tile.w / 2) * z0);
-    setTy(size.h / 2 - (tile.y + tile.h / 2) * z0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size, layout]);
+    setTx(size.w / 2);
+    setTy(size.h / 2);
+  }, [size]);
 
-  // 可见区域瓦片
+  // 可见瓦片
   const tiles: WorldTile[] = useMemo(() => {
     const worldX0 = (0 - tx) / z;
     const worldY0 = (0 - ty) / z;
     const worldX1 = (size.w - tx) / z;
     const worldY1 = (size.h - ty) / z;
     return layout.ensureCover({ x0: worldX0, y0: worldY0, x1: worldX1, y1: worldY1 });
-  }, [layout, tx, ty, z, size]);
+  }, [layout, tx, ty, z, size, picked]);
 
-  // 素材循环复用后同一 id 可能出现多个实例：放大"距屏幕中心最近"的那个
-  const nearestPickedTile: WorldTile | null = useMemo(() => {
-    if (!pickedId) return null;
-    const cx = (size.w / 2 - tx) / z;
-    const cy = (size.h / 2 - ty) / z;
-    let best: WorldTile | null = null;
-    let bd = Infinity;
-    const consider = (t: WorldTile) => {
-      if (t.id !== pickedId) return;
-      const dx = t.x + t.w / 2 - cx;
-      const dy = t.y + t.h / 2 - cy;
-      const d = dx * dx + dy * dy;
-      if (d < bd) {
-        bd = d;
-        best = t;
-      }
-    };
-    for (const t of tiles) consider(t);
-    // 完全不在视野时，回退到全局最近实例（保证 ←/→ 步进有落点）
-    if (!best) for (const t of layout.allTiles()) consider(t);
-    return best as WorldTile | null;
-  }, [tiles, layout, pickedId, tx, ty, z, size]);
-
-  // 键盘：←/→ 步进放大目标，Esc 退出
+  // 键盘:Esc 退出
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (useStore.getState().lightboxId) return;
-      if (e.key === "ArrowRight") {
-        e.preventDefault();
-        stepPick(1);
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        stepPick(-1);
+      if (e.key === "Escape") {
+        if (picked) setPicked(null);
+        else setView("masonry");
       }
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [stepPick]);
+  }, [picked, setView]);
 
   const schedulePan = (nextTx: number, nextTy: number) => {
     pendingPan.current = { tx: nextTx, ty: nextTy };
@@ -195,7 +141,6 @@ export default function InfiniteView() {
       cancelAnimationFrame(animRef.current);
       animRef.current = null;
     }
-    // 捕获指针：拖到窗口外/快速移动也不丢事件
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {
@@ -217,36 +162,42 @@ export default function InfiniteView() {
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
     dragRef.current = null;
-    if (!d) return;
-    // 自由平移：不吸附、不回弹
-    if (!d.moved) {
-      // 单击：命中检测
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
-      const id = tileEl?.dataset.tile;
-      if (id) {
-        if (e.shiftKey) select(id, "range");
-        else if (e.ctrlKey || e.metaKey) select(id, "toggle");
-        else {
-          // 双击的第二次点击不再还原，交给 dblclick 打开大图
-          const prev = lastClick.current;
-          const rapid = prev && prev.id === id && Date.now() - prev.t < 350;
-          lastClick.current = { id, t: Date.now() };
-          if (!rapid) {
-            if (id === pickedId) setPickedId(null);
-            else pickTile(id);
-          }
-        }
-      }
+    if (!d || d.moved) return;
+    // 单击命中检测
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
+    const key = tileEl?.dataset.key;
+    if (!key) return;
+    const [bx, by, slot] = key.split(":").map(Number);
+    if (e.shiftKey) {
+      const id = tileEl.dataset.tile;
+      if (id) select(id, "range");
+      return;
     }
+    if (e.ctrlKey || e.metaKey) {
+      const id = tileEl.dataset.tile;
+      if (id) select(id, "toggle");
+      return;
+    }
+    // 双击的第二次点击交给 dblclick
+    const prev = lastClick.current;
+    if (prev && prev.key === key && Date.now() - prev.t < 350) return;
+    lastClick.current = { key, t: Date.now() };
+    // 展开该卡:平滑把块中心带到视口中心
+    if (picked?.bx === bx && picked?.by === by && picked?.slot === slot) {
+      setPicked(null);
+      return;
+    }
+    setPicked({ bx, by, slot });
+    const t = tiles.find((tt) => tt.blockX === bx && tt.blockY === by && tt.slot === slot);
+    if (t) glideTo(t.x + t.w / 2, t.y + t.h / 2);
   };
 
   const onWheel = (e: React.WheelEvent) => {
-    // 画布式：滚轮 = 平移（shift+滚轮横向），Ctrl+滚轮 = 缩放
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const f = Math.exp(-e.deltaY * 0.0022);
-      setZ((old) => Math.min(3, Math.max(0.3, old * f)));
+      setZ((old) => Math.min(2.5, Math.max(0.3, old * f)));
       return;
     }
     const dx = e.shiftKey ? e.deltaY : e.deltaX;
@@ -255,7 +206,6 @@ export default function InfiniteView() {
     if (dy) schedulePan(tx, ty - dy);
   };
 
-  // 双击打开灯箱
   const onTileDoubleClick = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     select(id, "set");
@@ -270,34 +220,8 @@ export default function InfiniteView() {
     );
   }
 
-  // 选中卡的放大倍率与推开矩形（对 map 内所有瓦片一致可用）：
-  // 倍率约 72% 视口高、52% 视口宽封顶；推开矩形 = 放大后的世界矩形 + pad 空隙
-  const pickScale = useMemo(() => {
-    if (!nearestPickedTile) return 1;
-    const sh = nearestPickedTile.h * z;
-    const sw = nearestPickedTile.w * z;
-    return Math.min(4, Math.max(1.15, Math.min((size.h * 0.72) / sh, (size.w * 0.52) / sw)));
-  }, [nearestPickedTile, z, size]);
-
-  const expand = useMemo(() => {
-    if (!nearestPickedTile || pickScale <= 1) return null;
-    const P = nearestPickedTile;
-    const ew = P.w * pickScale;
-    const eh = P.h * pickScale;
-    return {
-      ex: P.x - (ew - P.w) / 2,
-      ey: P.y - (eh - P.h) / 2,
-      ew,
-      eh,
-      cx: P.x + P.w / 2,
-      cy: P.y + P.h / 2,
-      pad: 24,
-    };
-  }, [nearestPickedTile, pickScale]);
-
   return (
     <div className="relative flex-1 overflow-hidden bg-[#0a0b0f] no-select">
-      {/* 画布：图片密铺填满整屏 */}
       <div
         ref={containerRef}
         className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing"
@@ -308,59 +232,36 @@ export default function InfiniteView() {
         onWheel={onWheel}
       >
         {tiles.map((t) => {
-          const picked = t === nearestPickedTile;
+          const key = `${t.blockX}:${t.blockY}:${t.slot}`;
+          const isPicked = !!t.expanded;
           const selected = selection.has(t.id);
-          const key = `${t.id}#${Math.round(t.x)}x${Math.round(t.y)}`;
-          // 推开：与选中卡放大矩形相交的邻居沿主导轴推出，留出呼吸空隙
-          let dx = 0;
-          let dy = 0;
-          if (expand && !picked) {
-            const ex = expand.ex;
-            const ey = expand.ey;
-            const ox = Math.min(t.x + t.w, ex + expand.ew) - Math.max(t.x, ex);
-            const oy = Math.min(t.y + t.h, ey + expand.eh) - Math.max(t.y, ey);
-            if (ox > 0 && oy > 0) {
-              if (ox <= oy) dx = t.x + t.w / 2 < expand.cx ? -(ox + expand.pad) : ox + expand.pad;
-              else dy = t.y + t.h / 2 < expand.cy ? -(oy + expand.pad) : oy + expand.pad;
-            }
-          }
           return (
             <div
               key={key}
               data-tile={t.id}
+              data-key={key}
               className="absolute"
               style={{
                 transform: `translate3d(${t.x * z + tx}px, ${t.y * z + ty}px, 0)`,
                 width: t.w * z,
                 height: t.h * z,
-                zIndex: picked ? 30 : selected ? 5 : 1,
+                zIndex: isPicked ? 20 : selected ? 5 : 1,
               }}
               onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
             >
-              {/* 推开层：只在选中状态变化时动画，平移零延迟 */}
               <div
-                className="absolute inset-0"
+                className="absolute inset-0 overflow-hidden"
                 style={{
-                  transform: `translate3d(${dx * z}px, ${dy * z}px, 0)`,
-                  transition: "transform 450ms cubic-bezier(.22,1,.36,1)",
+                  transition: "filter 400ms ease, box-shadow 400ms ease",
+                  filter: picked && !isPicked ? "brightness(0.8)" : "none",
+                  borderRadius: isPicked ? 2 : 0,
+                  boxShadow: isPicked
+                    ? "0 0 0 1.2px rgba(255,255,255,.95), 0 10px 40px rgba(0,0,0,.4)"
+                    : selected
+                      ? "inset 0 0 0 2px rgba(167,139,250,.6)"
+                      : "none",
                 }}
               >
-                {/* 内层负责缩放动画。
-                    边框/圆角按放大倍率反比缩放，保证视觉尺寸恒定 */}
-                <div
-                  className="absolute inset-0 overflow-hidden transition-[transform,filter,box-shadow] duration-500 ease-out"
-                  style={{
-                    transform: `scale(${picked ? pickScale : 1})`,
-                    transformOrigin: "center",
-                    filter: pickedId && !picked ? "brightness(0.78)" : "none",
-                    borderRadius: picked ? 2 / pickScale : 0,
-                    boxShadow: picked
-                      ? `0 0 0 ${1.2 / pickScale}px rgba(255,255,255,.95), 0 ${14 / pickScale}px ${50 / pickScale}px rgba(0,0,0,.42)`
-                      : selected
-                        ? "inset 0 0 0 2px rgba(167,139,250,.6)"
-                        : "none",
-                  }}
-                >
                 <img
                   src={thumbUrl(t.id)}
                   alt=""
@@ -369,7 +270,6 @@ export default function InfiniteView() {
                   className="w-full h-full object-cover pointer-events-none"
                   style={{ backgroundColor: "#15171c" }}
                 />
-                </div>
               </div>
             </div>
           );
