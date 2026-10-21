@@ -21,23 +21,50 @@ fn main() {
     let lib = open_or_create_library();
     let (queue, rx) = JobQueue::new();
     let lib = Arc::new(Mutex::new(lib));
-    JobQueue::spawn_worker(queue.clone(), rx, lib.clone());
+    // spawn_worker 内部 tokio::spawn 需要运行时上下文 → 借用 Tauri 全局运行时启动
+    tauri::async_runtime::block_on(async {
+        JobQueue::spawn_worker(queue.clone(), rx, lib.clone());
+    });
 
-    // 启动内嵌 HTTP 服务（与 Web 版共用同一套 REST API，前端零改动）
-    // 端口冲突时自动递增，实际端口通过 get_api_base 暴露给前端
+    // 在窗口创建前同步绑定端口，得到确定性的 API 地址
     let lib2 = lib.clone();
     let queue2 = queue.clone();
-    tauri::async_runtime::spawn(async move {
-        match lilium_server::serve_embedded(lib2, queue2, None, 7333).await {
-            Ok(port) => PORT.store(port, std::sync::atomic::Ordering::SeqCst),
-            Err(e) => eprintln!("内嵌服务启动失败: {e}"),
-        }
+    let api_port = tauri::async_runtime::block_on(async {
+        lilium_server::serve_embedded(lib2, queue2, None, [127, 0, 0, 1], 7333)
+            .await
+            .unwrap_or_else(|e| {
+                eprintln!("内嵌服务启动失败: {e}");
+                0
+            })
     });
+    if api_port == 0 {
+        eprintln!("致命: 内嵌 API 无法绑定端口");
+        std::process::exit(1);
+    }
+    PORT.store(api_port, std::sync::atomic::Ordering::SeqCst);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .setup(move |app| {
+            // 手动创建窗口以注入初始化脚本（config 里不再定义 windows）
+            tauri::webview::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Lilium")
+            .inner_size(1440.0, 900.0)
+            .min_inner_size(980.0, 600.0)
+            // 关闭 Tauri 原生文件拖放拦截，让网页层 DropOverlay 处理 OS 文件拖入
+            .disable_drag_drop_handler()
+            .initialization_script(format!(
+                "window.__LILIUM_API__ = 'http://127.0.0.1:{api_port}';"
+            ))
+            .build()?;
+            Ok(())
+        })
         .manage(DeskState { lib, queue })
         .invoke_handler(tauri::generate_handler![
             get_api_base,

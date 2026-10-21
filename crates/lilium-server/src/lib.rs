@@ -36,10 +36,12 @@ pub fn default_config() -> ServerConfig {
 /// 拆分出的核心启动逻辑（供 Tauri 桌面端复用）：
 /// 打开/创建库 → 启动缩略图 worker → 观察文件夹扫描 → 绑定 HTTP 端口
 /// 返回实际绑定的端口（端口被占用时自动向后递增重试）
+/// `host`: 服务器部署用 [0,0,0,0]，桌面端用 [127,0,0,1]
 pub async fn serve_embedded(
     lib: Arc<Mutex<Library>>,
     queue: std::sync::Arc<JobQueue>,
     web_dist: Option<PathBuf>,
+    host: [u8; 4],
     preferred_port: u16,
 ) -> anyhow::Result<u16> {
     let state = Arc::new(ServerState { lib, queue, version: env!("CARGO_PKG_VERSION") });
@@ -52,10 +54,10 @@ pub async fn serve_embedded(
         app = app.fallback_service(fallback);
     }
 
-    // 端口冲突自动递增（桌面端多开场景）
+    // 端口冲突自动递增（多实例场景）
     let mut port = preferred_port;
     let listener = loop {
-        match tokio::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], port))).await {
+        match tokio::net::TcpListener::bind(std::net::SocketAddr::from((host, port))).await {
             Ok(l) => break l,
             Err(_) if port < 65535 => port += 1,
             Err(e) => return Err(e.into()),
@@ -136,7 +138,7 @@ pub async fn serve(cfg: ServerConfig) -> Result<(), anyhow::Error> {
     if cfg.open_browser {
         let _ = open::that(format!("http://localhost:{}/", cfg.port));
     }
-    let bound = serve_embedded(lib, queue, cfg.web_dist.or_else(|| auto_dist()), cfg.port).await?;
+    let bound = serve_embedded(lib, queue, cfg.web_dist.or_else(|| auto_dist()), [0, 0, 0, 0], cfg.port).await?;
     tracing::info!("Lilium 服务已启动: http://localhost:{}/", bound);
     // serve_embedded 内部已 spawn 服务，这里保持存活直到进程退出
     loop {

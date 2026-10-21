@@ -63,7 +63,7 @@ export interface Exif {
 }
 
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBase()}${path}`, {
+  const res = await fetch(`${apiBase()}/api${path}`, {
     headers: init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : undefined,
     ...init,
   });
@@ -86,7 +86,11 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
 declare global {
   interface Window {
     __LILIUM_API__?: string;
-    __TAURI__?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+    __TAURI_INTERNALS__?: unknown;
+    __TAURI__?: {
+      core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+    };
   }
 }
 
@@ -101,17 +105,32 @@ export function apiBase(): string {
   return "";
 }
 
-/** Tauri 桌面端初始化：从 Rust 侧取内嵌 API 地址 */
-export async function initDesktopApi(): Promise<boolean> {
-  if (window.__TAURI__ === undefined) return false;
-  try {
-    const base = (await window.__TAURI__.invoke("get_api_base")) as string;
-    cachedBase = base;
-    window.__LILIUM_API__ = base;
-    return true;
-  } catch {
-    return false;
+function isDesktop(): boolean {
+  return typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
+}
+
+/**
+ * Tauri 桌面端初始化：从 Rust 侧取内嵌 API 地址。
+ * 内嵌服务在后台线程启动，可能晚于窗口加载 → 带重试。
+ */
+export async function initDesktopApi(retries = 20, delayMs = 300): Promise<boolean> {
+  if (!isDesktop()) return false;
+  const invoke = window.__TAURI__?.core?.invoke ?? window.__TAURI__?.invoke;
+  if (!invoke) return false;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const base = (await invoke("get_api_base")) as string;
+      cachedBase = base;
+      window.__LILIUM_API__ = base;
+      // 服务就绪才返回（info 探测通过）
+      const res = await fetch(`${base}/api/info`);
+      if (res.ok) return true;
+    } catch {
+      /* 下一次重试 */
+    }
+    await new Promise((r) => setTimeout(r, delayMs));
   }
+  return false;
 }
 
 export const thumbUrl = (id: string) => `${apiBase()}/api/thumbs/${id}`;

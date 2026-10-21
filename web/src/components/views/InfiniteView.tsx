@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Crosshair, Maximize2, ZoomIn, ZoomOut, Map as MapIcon, X } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { itemAspectRatio, thumbUrl } from "../../api/client";
 import { buildMosaic, type MosaicLayout, type WorldTile } from "../../lib/infinite";
@@ -27,6 +27,7 @@ export default function InfiniteView() {
   const dragRef = useRef<{ x: number; y: number; tx: number; ty: number; moved: boolean } | null>(null);
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
   const marqueeStart = useRef<{ x: number; y: number } | null>(null);
+  const [showMinimap, setShowMinimap] = useState(false);
 
   const layout: MosaicLayout = useMemo(
     () => buildMosaic(items.map((it) => ({ id: it.id, aspect: itemAspectRatio(it) }))),
@@ -171,6 +172,22 @@ export default function InfiniteView() {
     [z, tx, ty],
   );
 
+  // 方向键平移（灯箱打开时让位给切换图片）
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (useStore.getState().lightboxId) return;
+      const step = 80;
+      if (e.key === "ArrowLeft") setTx((t) => t + step);
+      else if (e.key === "ArrowRight") setTx((t) => t - step);
+      else if (e.key === "ArrowUp") setTy((t) => t + step);
+      else if (e.key === "ArrowDown") setTy((t) => t - step);
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, []);
+
   const recenter = () => {
     setTx(size.w / 2);
     setTy(size.h / 2);
@@ -264,6 +281,22 @@ export default function InfiniteView() {
         />
       )}
 
+      {/* 小地图 */}
+      {showMinimap && (
+        <Minimap
+          layout={layout}
+          tx={tx}
+          ty={ty}
+          z={z}
+          viewport={{ w: size.w, h: size.h }}
+          onJump={(wx, wy) => {
+            setTx(size.w / 2 - wx * z);
+            setTy(size.h / 2 - wy * z);
+          }}
+          onClose={() => setShowMinimap(false)}
+        />
+      )}
+
       {/* 控制按钮 */}
       <div className="absolute right-4 bottom-4 flex flex-col gap-1.5 bg-panel/90 border border-border rounded-lg p-1 backdrop-blur">
         <button className="btn justify-center" title="放大" onClick={() => zoomBy(1.25)}>
@@ -278,11 +311,106 @@ export default function InfiniteView() {
         <button className="btn justify-center" title="全览" onClick={() => zoomBy(0.35)}>
           <Maximize2 size={15} />
         </button>
+        <button
+          className={`btn justify-center ${showMinimap ? "text-violet-300" : ""}`}
+          title="小地图"
+          onClick={() => setShowMinimap(!showMinimap)}
+        >
+          <MapIcon size={15} />
+        </button>
       </div>
 
       <div className="absolute left-4 bottom-4 text-[11px] text-neutral-500 bg-panel/80 border border-border rounded px-2 py-1 backdrop-blur">
-        拖拽平移 · 滚轮缩放 · Shift+拖拽框选 · 双击预览 · 共 {items.length} 张
+        拖拽平移 · 滚轮缩放 · 方向键平移 · Shift+拖拽框选 · 双击预览 · 共 {items.length} 张
       </div>
+    </div>
+  );
+}
+
+/** 小地图：显示已布局瓦片的整体分布与当前视口，点击跳转 */
+function Minimap({
+  layout,
+  tx,
+  ty,
+  z,
+  viewport,
+  onJump,
+  onClose,
+}: {
+  layout: MosaicLayout;
+  tx: number;
+  ty: number;
+  z: number;
+  viewport: { w: number; h: number };
+  onJump: (wx: number, wy: number) => void;
+  onClose: () => void;
+}) {
+  const W = 168;
+  const H = 120;
+  const bounds = layout.currentBounds;
+  const tiles = layout.allTiles();
+
+  const viewWorld = {
+    x0: (0 - tx) / z,
+    y0: (0 - ty) / z,
+    x1: (viewport.w - tx) / z,
+    y1: (viewport.h - ty) / z,
+  };
+
+  // 世界 → 小地图坐标
+  const pad = 8;
+  const worldW = bounds ? Math.max(bounds.x1 - bounds.x0, viewWorld.x1 - viewWorld.x0) : 1000;
+  const worldH = bounds ? Math.max(bounds.y1 - bounds.y0, viewWorld.y1 - viewWorld.y0) : 1000;
+  const worldX0 = bounds ? Math.min(bounds.x0, viewWorld.x0) : -500;
+  const worldY0 = bounds ? Math.min(bounds.y0, viewWorld.y0) : -500;
+  const scale = Math.min((W - pad * 2) / worldW, (H - pad * 2) / worldH);
+  const mx = (wx: number) => pad + (wx - worldX0) * scale;
+  const my = (wy: number) => pad + (wy - worldY0) * scale;
+
+  return (
+    <div className="absolute right-4 top-4 bg-panel/95 border border-border rounded-lg shadow-2xl backdrop-blur pop-in">
+      <div className="flex items-center gap-1 px-2 py-1 border-b border-border">
+        <MapIcon size={11} className="text-neutral-500" />
+        <span className="text-[10px] text-neutral-500 flex-1">小地图</span>
+        <button className="btn !p-0.5" onClick={onClose}><X size={10} /></button>
+      </div>
+      <svg
+        width={W}
+        height={H}
+        className="cursor-pointer"
+        onClick={(e) => {
+          const rect = (e.target as SVGElement).closest("svg")!.getBoundingClientRect();
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          const wx = (px - pad) / scale + worldX0;
+          const wy = (py - pad) / scale + worldY0;
+          onJump(wx, wy);
+        }}
+      >
+        {/* 全部瓦片轮廓 */}
+        {tiles.map((t) => (
+          <rect
+            key={t.id}
+            x={mx(t.x)}
+            y={my(t.y)}
+            width={Math.max(1, t.w * scale)}
+            height={Math.max(1, t.h * scale)}
+            fill="#3d3f48"
+            rx="0.5"
+          />
+        ))}
+        {/* 当前视口 */}
+        <rect
+          x={mx(viewWorld.x0)}
+          y={my(viewWorld.y0)}
+          width={Math.max(3, (viewWorld.x1 - viewWorld.x0) * scale)}
+          height={Math.max(3, (viewWorld.y1 - viewWorld.y0) * scale)}
+          fill="rgba(167,139,250,0.15)"
+          stroke="#a78bfa"
+          strokeWidth="1.5"
+          rx="1"
+        />
+      </svg>
     </div>
   );
 }

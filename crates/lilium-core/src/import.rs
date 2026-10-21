@@ -26,13 +26,14 @@ pub struct ItemPatch {
 
 /// 注册文件到库：复制进库、提取元数据、插入 DB、排队缩略图
 /// `src` 是已存在的文件路径（会被复制到库内）
+/// 返回 (条目, 是否新建)。false 表示命中去重（同路径或同内容），返回已有条目。
 pub fn ingest_file(
     lib: &Library,
     src: &Path,
     folder_id: Option<&str>,
     original_name: Option<&str>,
     queue: &JobQueue,
-) -> Result<crate::model::Item, anyhow::Error> {
+) -> Result<(crate::model::Item, bool), anyhow::Error> {
     let ext = src
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
@@ -44,6 +45,47 @@ pub fn ingest_file(
     let kind = meta::kind_of(&ext);
     let size = std::fs::metadata(src).map(|m| m.len() as i64).unwrap_or(0);
     let id = crate::jobs::new_id();
+
+    // 幂等去重：同一路径已在库中且未在回收站 → 直接返回已有条目
+    let src_str = src.to_string_lossy();
+    if let Some(existing) = lib
+        .conn
+        .query_row(
+            "SELECT id FROM items WHERE source_path = ?1 AND trash = 0 LIMIT 1",
+            [&src_str],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    {
+        let mut item = lib.get_item(&existing).ok_or_else(|| anyhow::anyhow!("读取已存在条目失败"))?;
+        item.tags = vec![];
+        queue.queue_thumbnail(existing);
+        return Ok((item, false));
+    }
+
+    // 二级保护：同内容(SHA1)同尺寸 → 视为重复文件，同样幂等返回
+    // （先算 hash 需要解码图片；用文件大小做廉价预筛，避免每个文件都解码）
+    if size > 0 {
+        let dup_id = lib
+            .conn
+            .query_row(
+                "SELECT id FROM items WHERE size = ?1 AND source_path != ?2 AND trash = 0 LIMIT 1",
+                rusqlite::params![size, src_str],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+        if let Some(dup_id) = dup_id {
+            if let Some(dup) = lib.get_item(&dup_id) {
+                if let Some(dup_hash) = &dup.hash {
+                    if dup_hash == &crate::eagle::sha1_hex_file(src) {
+                        let mut item = lib.get_item(&dup_id).ok_or_else(|| anyhow::anyhow!("读取重复条目失败"))?;
+                        item.tags = vec![];
+                        return Ok((item, false));
+                    }
+                }
+            }
+        }
+    }
 
     // copy into library
     let sub = lib.root.join("images").join(&id[0..2]);
@@ -109,7 +151,7 @@ pub fn ingest_file(
     queue.queue_thumbnail(id.clone());
     let mut item = lib.get_item(&id).ok_or_else(|| anyhow::anyhow!("导入后读取条目失败"))?;
     item.tags = vec![];
-    Ok(item)
+    Ok((item, true))
 }
 
 /// 从注册表中读取直接文件（可递归目录）
@@ -150,8 +192,10 @@ pub fn import_paths_sync(
     let files = collect_files(path, true);
     let mut n = 0;
     for f in &files {
-        if ingest_file(lib, f, folder_id, None, queue).is_ok() {
-            n += 1;
+        if let Ok((_, created)) = ingest_file(lib, f, folder_id, None, queue) {
+            if created {
+                n += 1;
+            }
         }
     }
     let _ = opts;
@@ -173,7 +217,7 @@ pub fn import_bytes(
         .unwrap_or_default();
     let tmp = std::env::temp_dir().join(format!("lilium-upload-{}{}", crate::jobs::new_id(), ext));
     std::fs::write(&tmp, &bytes)?;
-    let item = ingest_file(lib, &tmp, folder_id, Some(filename), queue);
+    let item = ingest_file(lib, &tmp, folder_id, Some(filename), queue).map(|(it, _)| it);
     std::fs::remove_file(&tmp).ok();
     item
 }

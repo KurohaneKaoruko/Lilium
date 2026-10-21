@@ -35,6 +35,46 @@ impl serde::Serialize for LooseInt {
     }
 }
 
+/// 宽松布尔：兼容 "true"/"1"/"yes" 与 JS 布尔
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LooseBool(pub bool);
+
+impl<'de> serde::Deserialize<'de> for LooseBool {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = LooseBool;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("boolean or string boolean")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<LooseBool, E> {
+                Ok(LooseBool(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<LooseBool, E> {
+                Ok(LooseBool(v != 0))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<LooseBool, E> {
+                Ok(LooseBool(v != 0))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LooseBool, E> {
+                match v.trim().to_lowercase().as_str() {
+                    "true" | "1" | "yes" | "on" => Ok(LooseBool(true)),
+                    "false" | "0" | "no" | "off" | "" => Ok(LooseBool(false)),
+                    _ => Err(serde::de::Error::custom(format!("非法布尔: {v}"))),
+                }
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
+impl std::ops::Deref for LooseBool {
+    type Target = bool;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// 宽松字符串列表：兼容 `kinds=a,b` 与 `kinds=a&kinds=b` 与单个标量
 #[derive(Debug, Clone, Default)]
 pub struct LooseVec(pub Vec<String>);
@@ -103,14 +143,21 @@ pub struct Query {
     #[serde(default)]
     pub color_tolerance: LooseInt,
     pub q: Option<String>,
-    pub trash: bool,
-    pub untagged: bool,
-    pub unfiled: bool,
+    #[serde(default)]
+    pub trash: LooseBool,
+    #[serde(default)]
+    pub untagged: LooseBool,
+    #[serde(default)]
+    pub unfiled: LooseBool,
     pub sort: Option<String>,
-    pub asc: bool,
+    #[serde(default)]
+    pub asc: LooseBool,
+    #[serde(default)]
     pub offset: LooseInt,
+    #[serde(default)]
     pub limit: LooseInt,
     /// 随机排序种子
+    #[serde(default)]
     pub seed: LooseInt,
 }
 
@@ -154,7 +201,7 @@ impl rusqlite::types::ToSql for Arg {
 type SqlArgs = Vec<Arg>;
 
 pub fn build(q: &Query) -> (String, String, SqlArgs) {
-    let mut where_parts: Vec<String> = vec![format!("trash = {}", q.trash as i64)];
+    let mut where_parts: Vec<String> = vec![format!("trash = {}", (*q.trash) as i64)];
     let mut args: SqlArgs = vec![];
 
     if let Some(folder_id) = &q.folder_id {
@@ -213,10 +260,10 @@ pub fn build(q: &Query) -> (String, String, SqlArgs) {
         args.push(Arg::S(like.clone()));
         args.push(Arg::S(like));
     }
-    if q.untagged {
+    if *q.untagged {
         where_parts.push("id NOT IN (SELECT item_id FROM item_tags)".into());
     }
-    if q.unfiled {
+    if *q.unfiled {
         where_parts.push("folder_id IS NULL".into());
     }
 
@@ -231,7 +278,7 @@ pub fn build(q: &Query) -> (String, String, SqlArgs) {
         }
         s => {
             let col = sanitize_sort(s).unwrap_or("added_at");
-            format!("ORDER BY {col} {}, id", if q.asc { "ASC" } else { "DESC" })
+            format!("ORDER BY {col} {}, id", if *q.asc { "ASC" } else { "DESC" })
         }
     };
     let limit = if q.limit.0 <= 0 { 200 } else { q.limit.0.min(2000) };

@@ -212,13 +212,13 @@ struct ItemsQuery {
     #[serde(flatten)]
     q: Query,
     /// 递归查询子文件夹
-    recursive: Option<bool>,
+    recursive: Option<lilium_core::query::LooseBool>,
 }
 
 async fn items(State(state): State<ArcState>, QQuery(q): QQuery<ItemsQuery>) -> Result<Response, ApiError> {
     with_lib_blocking(&state, move |lib| {
         let mut query = q.q.clone();
-        let recursive = q.recursive.unwrap_or(true);
+        let recursive = q.recursive.map(|b| *b).unwrap_or(true);
         if recursive {
             if let Some(fid) = &query.folder_id {
                 query.folder_ids = lib.folder_ids_recursive(fid);
@@ -277,7 +277,7 @@ async fn update_item(
 #[derive(Deserialize)]
 struct DeleteItemReq {
     #[serde(default)]
-    purge: bool,
+    purge: lilium_core::query::LooseBool,
 }
 
 async fn delete_item(
@@ -286,7 +286,7 @@ async fn delete_item(
     QQuery(q): QQuery<DeleteItemReq>,
 ) -> Result<Response, ApiError> {
     with_lib_blocking(&state, move |lib| {
-        if q.purge {
+        if *q.purge {
             lib.purge_item(&id)?;
         } else {
             lib.trash_item(&id)?;

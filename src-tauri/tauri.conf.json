@@ -7,16 +7,7 @@
     "frontendDist": "../web/dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "Lilium",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 980,
-        "minHeight": 600,
-        "dragDropEnabled": false
-      }
-    ],
+    "withGlobalTauri": true,
     "security": {
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; img-src 'self' http://127.0.0.1:* http://localhost:* data: blob:; media-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'"
     }

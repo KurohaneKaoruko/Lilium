@@ -10,6 +10,7 @@ import MasonryView from "./components/views/MasonryView";
 import ListView from "./components/views/ListView";
 import InfiniteView from "./components/views/InfiniteView";
 import { DuplicatesModal, BatchRenameModal, SelectionBar, SettingsModal, ShortcutsModal } from "./components/modals/Modals";
+import DropOverlay from "./components/DropOverlay";
 import { useStore } from "./store/useStore";
 import { api } from "./api/client";
 
@@ -27,6 +28,10 @@ export default function App() {
     refreshMeta();
     fetchItems();
   }, [refreshMeta, fetchItems]);
+
+  // 桌面端诊断横幅（临时）
+  const [diag, setDiag] = useState<string>("");
+  void diag; void setDiag;
 
   // 批量重命名事件
   useEffect(() => {
@@ -104,6 +109,7 @@ export default function App() {
 
       <Lightbox />
       <ContextMenu />
+      <DropOverlay />
 
       {modal === "shortcuts" && <ShortcutsModal onClose={() => setModal(null)} />}
       {modal === "duplicates" && <DuplicatesModal onClose={() => setModal(null)} />}
