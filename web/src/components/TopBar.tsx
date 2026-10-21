@@ -25,10 +25,14 @@ const SORTS: { key: string; label: string }[] = [
   { key: "random", label: "随机" },
 ];
 
-export default function TopBar({ onImported }: { onImported: () => void }) {
+export default function TopBar({ onImported, immersive = false }: { onImported: () => void; immersive?: boolean }) {
   const [importMode, setImportMode] = useState<null | "url" | "disk" | "library">(null);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
+  // 沉浸模式:面板透明融入玻璃底,拖拽区交给外层 FloatingChrome
+  const shell = immersive
+    ? "h-full bg-transparent border-b-0 px-2"
+    : "h-11 shrink-0 bg-panel border-b border-border px-3";
   const zoom = useStore((s) => s.zoom);
   const setZoom = useStore((s) => s.setZoom);
   const sort = useStore((s) => s.sort);
@@ -75,7 +79,9 @@ export default function TopBar({ onImported }: { onImported: () => void }) {
   };
 
   return (
-    <header className="h-11 shrink-0 bg-panel border-b border-border flex items-center gap-2 px-3">
+    <header className={`${shell} flex items-center gap-2`}>
+      {/* 沉浸模式下左端留出 mac 风格拖拽区(外层已有 data-tauri-drag-region 的按钮排) */}
+      {immersive && <div className="w-2 shrink-0 self-stretch" data-tauri-drag-region />}
       {/* 视图切换 */}
       <div className="flex items-center bg-panel2 rounded-md p-0.5 border border-border">
         {VIEWS.map((v) => (

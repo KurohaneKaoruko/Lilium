@@ -129,7 +129,7 @@ const KINDS: { key: string; label: string }[] = [
 
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899"];
 
-export default function Sidebar() {
+export default function Sidebar({ immersive = false }: { immersive?: boolean }) {
   const info = useStore((s) => s.info);
   const folders = useStore((s) => s.folders);
   const tags = useStore((s) => s.tags);
@@ -173,7 +173,11 @@ export default function Sidebar() {
   const filteredTags = tags.filter((t) => !tagFilter || t.name.toLowerCase().includes(tagFilter.toLowerCase()));
 
   return (
-    <aside className="w-56 shrink-0 bg-panel border-r border-border flex flex-col overflow-y-auto">
+    <aside
+      className={`shrink-0 flex flex-col overflow-y-auto ${
+        immersive ? "w-56 h-full bg-transparent border-r-0" : "w-56 bg-panel border-r border-border"
+      }`}
+    >
       {/* 库信息 */}
       <div className="px-3 py-3 border-b border-border">
         <div className="flex items-center gap-2">

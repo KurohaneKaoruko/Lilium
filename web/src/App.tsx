@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Wand2 } from "lucide-react";
+import { Wand2, Image as ImageIcon, Inbox, Tags as TagsIcon, Trash2, Keyboard as KeyboardIcon, Settings as SettingsIcon } from "lucide-react";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import DetailPanel from "./components/DetailPanel";
@@ -12,6 +12,7 @@ import InfiniteView from "./components/views/InfiniteView";
 import { DuplicatesModal, BatchRenameModal, SelectionBar, SettingsModal, ShortcutsModal } from "./components/modals/Modals";
 import DropOverlay from "./components/DropOverlay";
 import CollectionsView from "./components/views/CollectionsView";
+import WindowControls from "./components/WindowControls";
 import { useStore } from "./store/useStore";
 import { api } from "./api/client";
 
@@ -39,6 +40,18 @@ export default function App() {
     const h = (e: Event) => setRenameIds((e as CustomEvent).detail.ids);
     window.addEventListener("lilium:batch-rename", h);
     return () => window.removeEventListener("lilium:batch-rename", h);
+  }, []);
+
+  // MiniRail 呼出的弹窗
+  useEffect(() => {
+    const a = () => setModal("shortcuts");
+    const b = () => setModal("settings");
+    window.addEventListener("lilium:open-shortcuts", a);
+    window.addEventListener("lilium:open-settings", b);
+    return () => {
+      window.removeEventListener("lilium:open-shortcuts", a);
+      window.removeEventListener("lilium:open-settings", b);
+    };
   }, []);
 
   // 全局快捷键
@@ -88,6 +101,68 @@ export default function App() {
   }, [toast]);
 
   const fullscreen = view === "infinite";
+  const chromeTop = useStore((s) => s.chromeTop);
+  const chromeLeft = useStore((s) => s.chromeLeft);
+  const setChromeTop = useStore((s) => s.setChromeTop);
+  const setChromeLeft = useStore((s) => s.setChromeLeft);
+
+  // 沉浸视图:顶/左两块面板独立呼出收起。
+  // - 指针进顶边缘热区(且不在左侧栏) → 只落顶栏;离热区且没悬停在任何面板上 → 只收顶栏
+  // - 指针进左边缘热区 → 只展开左栏;左栏收起态由 MiniRail 自己的悬停接管
+  useEffect(() => {
+    if (!fullscreen) return;
+    const EDGE = 6;
+    let overLeftPanel = false; // 指针是否在左侧面板上(顶边缘热区从 x=0 开始,要排除它)
+    const onMove = (e: PointerEvent) => {
+      const st = useStore.getState();
+      const inTopZone = e.clientY <= EDGE && e.clientX > 12;
+      const inLeftZone = e.clientX <= EDGE;
+      if (inTopZone && !overLeftPanel && !st.chromeTop) setChromeTop(true);
+      if (inLeftZone && !st.chromeLeft) setChromeLeft(true);
+      // 离开顶热区:若指针没悬停在面板上 → 收顶栏(左侧栏不受影响)
+      if (!inTopZone && st.chromeTop && !overLeftPanel && !st.chromeHovering) {
+        window.setTimeout(() => {
+          const s2 = useStore.getState();
+          if (!s2.chromeHovering && s2.chromeTop) setChromeTop(false);
+        }, 260);
+      }
+    };
+    const onOverLeft = () => {
+      overLeftPanel = true;
+    };
+    const onLeaveLeft = () => {
+      overLeftPanel = false;
+    };
+    const leftEl = () => document.querySelector("[data-chrome-left]");
+    window.addEventListener("pointermove", onMove);
+    const t = window.setInterval(() => {
+      const el = leftEl();
+      if (el) {
+        el.removeEventListener("pointerenter", onOverLeft);
+        el.addEventListener("pointerenter", onOverLeft);
+        el.removeEventListener("pointerleave", onLeaveLeft);
+        el.addEventListener("pointerleave", onLeaveLeft);
+      }
+    }, 500);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.clearInterval(t);
+    };
+  }, [fullscreen, setChromeTop, setChromeLeft]);
+
+  // 点击墙面(拖拽/滚轮)→ 两块面板都收起
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onWall = () => {
+      const st = useStore.getState();
+      if (!st.chromeHovering) {
+        if (st.chromeTop) st.setChromeTop(false);
+        if (st.chromeLeft) st.setChromeLeft(false);
+      }
+    };
+    window.addEventListener("lilium:wall-interact", onWall);
+    return () => window.removeEventListener("lilium:wall-interact", onWall);
+  }, [fullscreen]);
 
   return (
     <div className="h-full flex flex-col">
@@ -112,6 +187,19 @@ export default function App() {
         {!fullscreen && <DetailPanelWrapper />}
       </div>
 
+      {/* 沉浸视图的悬浮工作台:顶栏(含窗口钮)与左栏相互独立,各自呼出/收起 */}
+      {fullscreen && (
+        <FloatingChrome>
+          {(mode) =>
+            mode === "top" ? (
+              <TopBar immersive onImported={() => setToast("导入完成")} />
+            ) : (
+              <Sidebar immersive />
+            )
+          }
+        </FloatingChrome>
+      )}
+
       <Lightbox />
       <ContextMenu />
       <DropOverlay />
@@ -134,4 +222,138 @@ function DetailPanelWrapper() {
   const detailId = useStore((s) => s.detailId);
   if (!detailId) return null;
   return <DetailPanel />;
+}
+
+/**
+ * 沉浸视图的悬浮容器:顶栏(含窗口钮)与左栏各自独立——
+ *   · 顶栏:顶边缘热区呼出,墙面交互/Esc 收起
+ *   · 左栏:左边缘或图标轨悬停展开,指针离开收成图标轨
+ * 悬停在任一面板上时 chromeHovering=true,双方都不自动收起。
+ */
+function FloatingChrome({ children }: { children: (mode: "top" | "left") => React.ReactNode }) {
+  const chromeTop = useStore((s) => s.chromeTop);
+  const chromeLeft = useStore((s) => s.chromeLeft);
+  const setChromeTop = useStore((s) => s.setChromeTop);
+  const setChromeLeft = useStore((s) => s.setChromeLeft);
+
+  const hold = () => useStore.setState({ chromeHovering: true });
+  const release = () => {
+    useStore.setState({ chromeHovering: false });
+    window.setTimeout(() => {
+      const st = useStore.getState();
+      if (st.chromeHovering) return;
+      if (st.chromeTop) setChromeTop(false);
+      if (st.chromeLeft) setChromeLeft(false);
+    }, 260);
+  };
+
+  return (
+    <>
+      {/* 顶部:窗口控制钮 + 主顶栏(整体隐藏) */}
+      <div
+        onPointerEnter={hold}
+        onPointerLeave={release}
+        className={`absolute top-0 inset-x-0 z-40 transition-transform duration-300 ease-out ${
+          chromeTop ? "translate-y-0" : "-translate-y-full"
+        }`}
+      >
+        <div className="flex items-stretch h-11 bg-panel/85 backdrop-blur-md border-b border-border/60 shadow-lg">
+          <div className="flex-1 min-w-0">{children("top")}</div>
+          <WindowControls />
+        </div>
+      </div>
+      {/* 左栏:完整侧栏,从左滑入 */}
+      <div
+        data-chrome-left
+        onPointerEnter={hold}
+        onPointerLeave={release}
+        className={`absolute left-0 top-0 bottom-0 z-30 transition-transform duration-300 ease-out ${
+          chromeLeft ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="h-full pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60 shadow-lg">
+          {children("left")}
+        </div>
+      </div>
+      {/* 左栏收起态:窄图标轨,常驻;悬停展开完整侧栏 */}
+      <div
+        className={`absolute left-0 top-0 bottom-0 z-20 transition-opacity duration-200 ${
+          chromeLeft ? "opacity-0 pointer-events-none" : "opacity-100"
+        }`}
+      >
+        <MiniRail onExpand={() => setChromeLeft(true)} />
+      </div>
+    </>
+  );
+}
+
+/** 收起态的左栏:窄图标轨 */
+function MiniRail({ onExpand }: { onExpand: () => void }) {
+  const filters = useStore((s) => s.filters);
+  const setFilters = useStore((s) => s.setFilters);
+  const resetFilters = useStore((s) => s.resetFilters);
+  const info = useStore((s) => s.info);
+
+  const item = (active: boolean) =>
+    `w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+      active
+        ? "bg-violet-500/25 text-violet-200"
+        : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
+    }`;
+
+  return (
+    <div
+      onPointerEnter={onExpand}
+      className="w-12 h-full bg-panel/85 backdrop-blur-md border-r border-border/60 flex flex-col items-center py-2 gap-1"
+    >
+      <div className="text-lg leading-none mb-1" title={info?.name ?? "Lilium"}>
+        🌸
+      </div>
+      <button
+        className={item(
+          !filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged,
+        )}
+        title="全部图片"
+        onClick={() => resetFilters()}
+      >
+        <ImageIcon size={15} />
+      </button>
+      <button
+        className={item(filters.unfiled)}
+        title="未分类"
+        onClick={() => setFilters({ unfiled: true, folderId: null, trash: false, smartId: null })}
+      >
+        <Inbox size={15} />
+      </button>
+      <button
+        className={item(filters.untagged)}
+        title="未加标签"
+        onClick={() => setFilters({ untagged: true, folderId: null, trash: false, smartId: null })}
+      >
+        <TagsIcon size={15} />
+      </button>
+      <button
+        className={item(filters.trash)}
+        title="回收站"
+        onClick={() => setFilters({ trash: true, folderId: null, smartId: null })}
+      >
+        <Trash2 size={15} />
+      </button>
+      <div className="flex-1" />
+      <button
+        className={item(false)}
+        title="快捷键 (?)"
+        onClick={() => window.dispatchEvent(new CustomEvent("lilium:open-shortcuts"))}
+      >
+        <KeyboardIcon size={15} />
+      </button>
+      <button
+        className={item(false)}
+        title="设置"
+        onClick={() => window.dispatchEvent(new CustomEvent("lilium:open-settings"))}
+      >
+        <SettingsIcon size={15} />
+      </button>
+    </div>
+  );
 }

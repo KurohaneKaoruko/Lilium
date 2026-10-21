@@ -57,6 +57,8 @@ fn main() {
             .title("Lilium")
             .inner_size(1440.0, 900.0)
             .min_inner_size(980.0, 600.0)
+            // 无系统外框:最小化/关闭由 web 层自绘(WindowControls),随顶栏一起自动收起
+            .decorations(false)
             // 关闭 Tauri 原生文件拖放拦截，让网页层 DropOverlay 处理 OS 文件拖入
             .disable_drag_drop_handler()
             .initialization_script(format!(

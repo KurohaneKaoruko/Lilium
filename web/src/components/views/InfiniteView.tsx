@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { thumbUrl } from "../../api/client";
 import {
@@ -276,13 +275,22 @@ export default function InfiniteView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, size, picked, renderTick]);
 
-  // 键盘:Esc 退出
+  // 键盘:Esc → 先藏面板(顶→左),再收起展开卡,最后退出视图
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (useStore.getState().lightboxId) return;
       if (e.key === "Escape") {
+        const st = useStore.getState();
+        if (st.chromeTop) {
+          st.setChromeTop(false);
+          return;
+        }
+        if (st.chromeLeft) {
+          st.setChromeLeft(false);
+          return;
+        }
         if (pickedRef.current) applyPicked(null);
         else setView("masonry");
       }
@@ -291,9 +299,18 @@ export default function InfiniteView() {
     return () => window.removeEventListener("keydown", h);
   }, [applyPicked, setView]);
 
+  /** 墙面交互(拖拽/滚轮)→ 收起悬浮管理界面 */
+  const wallInteract = useCallback(() => {
+    const st = useStore.getState();
+    if (st.chromeHovering) return;
+    if (st.chromeTop) st.setChromeTop(false);
+    if (st.chromeLeft) st.setChromeLeft(false);
+  }, []);
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     stopCamAnim();
+    wallInteract();
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {
@@ -370,6 +387,7 @@ export default function InfiniteView() {
   };
 
   const onWheel = (e: React.WheelEvent) => {
+    wallInteract();
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       const f = Math.exp(-e.deltaY * 0.0022);
@@ -478,15 +496,6 @@ export default function InfiniteView() {
       {/* 顶部/底部渐隐遮罩 */}
       <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
       <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
-
-      {/* 退出按钮 */}
-      <button
-        className="absolute left-4 top-4 w-9 h-9 rounded-full bg-black/55 backdrop-blur border border-white/10 text-neutral-200 flex items-center justify-center hover:bg-black/75 z-30"
-        title="退出 (Esc)"
-        onClick={() => setView("masonry")}
-      >
-        <X size={17} />
-      </button>
     </div>
   );
 }

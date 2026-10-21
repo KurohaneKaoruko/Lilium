@@ -27,6 +27,14 @@ interface State {
 
   filters: Filters;
   view: ViewMode;
+  /** 沉浸视图:顶部面板(含窗口钮)是否可见;顶边缘悬停呼出,墙面交互/Esc 收起 */
+  chromeTop: boolean;
+  /** 沉浸视图:左侧完整侧栏是否可见;左边缘/图标轨悬停呼出(与顶栏相互独立) */
+  chromeLeft: boolean;
+  /** 指针正悬停在悬浮面板上(阻止自动收起) */
+  chromeHovering: boolean;
+  setChromeTop: (v: boolean) => void;
+  setChromeLeft: (v: boolean) => void;
   zoom: number; // grid 尺寸 / masonry 列宽 / infinite 初始视野
   sort: SortKey;
   asc: boolean;
@@ -88,7 +96,10 @@ export const useStore = create<State>((set, get) => ({
   smartFolders: [],
 
   filters: { ...defaultFilters },
-  view: "masonry",
+  view: "infinite",
+  chromeTop: true,
+  chromeLeft: true,
+  chromeHovering: false,
   zoom: 240,
   sort: "addedAt",
   asc: false,
@@ -180,6 +191,8 @@ export const useStore = create<State>((set, get) => ({
   },
 
   setView: (v) => set({ view: v }),
+  setChromeTop: (v) => set({ chromeTop: v }),
+  setChromeLeft: (v) => set({ chromeLeft: v }),
   setZoom: (z) => set({ zoom: Math.max(80, Math.min(560, z)) }),
   setSort: (s, asc) => {
     set({ sort: s, asc: asc ?? get().asc });
