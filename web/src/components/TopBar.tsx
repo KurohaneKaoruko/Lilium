@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import {
   LayoutGrid, Rows3, List, Sparkles, Search, Upload, Link2, Import, X,
-  FolderPlus, RefreshCcw, Keyboard, Settings,
+  FolderPlus, RefreshCcw, Keyboard, Settings, AudioWaveform, Shapes,
 } from "lucide-react";
 import { useStore, type ViewMode } from "../store/useStore";
 import { api } from "../api/client";
@@ -10,7 +10,9 @@ const VIEWS: { key: ViewMode; icon: React.ReactNode; label: string }[] = [
   { key: "masonry", icon: <LayoutGrid size={15} />, label: "瀑布流" },
   { key: "grid", icon: <Rows3 size={15} />, label: "网格" },
   { key: "list", icon: <List size={15} />, label: "列表" },
-  { key: "infinite", icon: <Sparkles size={15} />, label: "无限视图" },
+  { key: "infinite", icon: <Sparkles size={15} />, label: "无限画布" },
+  { key: "ambient", icon: <AudioWaveform size={15} />, label: "氛围墙" },
+  { key: "collections", icon: <Shapes size={15} />, label: "分类墙" },
 ];
 
 const SORTS: { key: string; label: string }[] = [

@@ -34,6 +34,9 @@ export interface Folder {
   parentId: string | null;
   name: string;
   position: number;
+  /** 封面条目（最新一张图） */
+  coverItemId?: string | null;
+  itemCount?: number;
 }
 
 export interface Tag {

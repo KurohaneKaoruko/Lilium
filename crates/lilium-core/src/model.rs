@@ -48,6 +48,11 @@ pub struct Folder {
     pub parent_id: Option<String>,
     pub name: String,
     pub position: i64,
+    /// 封面条目（最新加入的一张，无条目时为 None）
+    #[serde(default)]
+    pub cover_item_id: Option<String>,
+    #[serde(default)]
+    pub item_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,5 +108,7 @@ pub fn folder_from_row(row: &rusqlite::Row) -> rusqlite::Result<Folder> {
         parent_id: row.get("parent_id")?,
         name: row.get("name")?,
         position: row.get("position")?,
+        cover_item_id: row.get("cover_item_id").ok().flatten(),
+        item_count: row.get("item_count").unwrap_or(0),
     })
 }

@@ -61,7 +61,7 @@ async fn folders(State(state): State<ArcState>) -> Result<Response, ApiError> {
 
 #[derive(Deserialize)]
 struct CreateFolderReq {
-    #[serde(default)]
+    #[serde(default, alias = "parentId")]
     parent_id: Option<String>,
     name: String,
 }
@@ -376,7 +376,7 @@ struct BatchReq {
     remove: bool,
     #[serde(default)]
     rating: Option<i64>,
-    #[serde(default)]
+    #[serde(default, alias = "folderId")]
     folder_id: Option<String>,
 }
 
@@ -426,7 +426,7 @@ async fn batch_rename(State(state): State<ArcState>, Json(req): Json<BatchRename
 #[derive(Deserialize)]
 struct ImportPathsReq {
     paths: Vec<String>,
-    #[serde(default)]
+    #[serde(default, alias = "folderId")]
     folder_id: Option<String>,
 }
 
@@ -509,7 +509,7 @@ async fn import_upload(State(state): State<ArcState>, mut multipart: Multipart) 
 #[derive(Deserialize)]
 struct ImportUrlReq {
     url: String,
-    #[serde(default)]
+    #[serde(default, alias = "folderId")]
     folder_id: Option<String>,
 }
 

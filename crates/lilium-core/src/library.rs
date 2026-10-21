@@ -95,7 +95,13 @@ impl Library {
     pub fn list_folders(&self) -> Vec<Folder> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, parent_id, name, position FROM folders ORDER BY position, name")
+            .prepare(
+                "SELECT f.id, f.parent_id, f.name, f.position,
+                        (SELECT i.id FROM items i WHERE i.folder_id = f.id AND i.trash = 0
+                          ORDER BY i.added_at DESC LIMIT 1) AS cover_item_id,
+                        (SELECT COUNT(*) FROM items i WHERE i.folder_id = f.id AND i.trash = 0) AS item_count
+                 FROM folders f ORDER BY f.position, f.name",
+            )
             .unwrap();
         let rows = stmt
             .query_map([], crate::model::folder_from_row)
@@ -114,7 +120,7 @@ impl Library {
             "INSERT INTO folders(id, parent_id, name, position, created_at) VALUES(?1,?2,?3,?4,?5)",
             params![id, parent_id, name.trim(), pos, crate::jobs::now_ms()],
         )?;
-        Ok(Folder { id, parent_id: parent_id.map(|s| s.to_string()), name: name.trim().to_string(), position: pos })
+        Ok(Folder { id, parent_id: parent_id.map(|s| s.to_string()), name: name.trim().to_string(), position: pos, cover_item_id: None, item_count: 0 })
     }
 
     /// 生成 descendants（含自身）的 folder id 列表

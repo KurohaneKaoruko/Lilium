@@ -11,6 +11,8 @@ import ListView from "./components/views/ListView";
 import InfiniteView from "./components/views/InfiniteView";
 import { DuplicatesModal, BatchRenameModal, SelectionBar, SettingsModal, ShortcutsModal } from "./components/modals/Modals";
 import DropOverlay from "./components/DropOverlay";
+import AmbientView from "./components/views/AmbientView";
+import CollectionsView from "./components/views/CollectionsView";
 import { useStore } from "./store/useStore";
 import { api } from "./api/client";
 
@@ -102,6 +104,8 @@ export default function App() {
           {view === "grid" && <GridView />}
           {view === "list" && <ListView />}
           {view === "infinite" && <InfiniteView />}
+          {view === "ambient" && <AmbientView />}
+          {view === "collections" && <CollectionsView />}
           <SelectionBar />
         </main>
         <DetailPanelWrapper />
