@@ -265,15 +265,15 @@ export class MosaicLayout {
                 const heroTop = heroTopStd + (heroStdH - heroH) / 2;
                 const heroBot = heroTop + heroH;
                 const y0 = by * g.blockHeight + s.y * this.pitch;
-                // 上邻:bottom 标准态贴 hero top
-                if (Math.abs(y0 + stdH - heroTopStd) < 1) {
+                // 上邻:bottom 标准态距 hero top 恰好一个 gap
+                if (Math.abs(y0 + stdH + this.gap - heroTopStd) < 1) {
                   r = { x: bx * g.blockWidth + s.x * this.pitch, y: y0 + (heroTop - heroTopStd), w, h: stdH };
                   this.emitted.add(key);
                   this.tiles.push({ id, ...r, ring: by, blockX: bx, blockY: by, slot, expanded });
                   continue;
                 }
-                // 下邻:top 标准态贴 hero bottom
-                if (Math.abs(y0 - heroBotStd) < 1) {
+                // 下邻:top 标准态距 hero bottom 恰好一个 gap
+                if (Math.abs(y0 - this.gap - heroBotStd) < 1) {
                   r = { x: bx * g.blockWidth + s.x * this.pitch, y: y0 + (heroBot - heroBotStd), w, h: stdH };
                   this.emitted.add(key);
                   this.tiles.push({ id, ...r, ring: by, blockX: bx, blockY: by, slot, expanded });
