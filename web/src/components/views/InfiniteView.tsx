@@ -296,6 +296,23 @@ export default function InfiniteView() {
               Math.max(1.15, Math.min((size.h * 0.72) / sh, (size.w * 0.52) / sw)),
             );
           }
+          // 推开：与选中卡扩展矩形相交的邻居沿主导轴推出，留出呼吸空隙
+          let dx = 0;
+          let dy = 0;
+          if (nearestPickedTile && !picked && pickScale > 1) {
+            const P = nearestPickedTile;
+            const ex = P.x - (P.w * (pickScale - 1)) / 2;
+            const ey = P.y - (P.h * (pickScale - 1)) / 2;
+            const ew = P.w * pickScale;
+            const eh = P.h * pickScale;
+            const ox = Math.min(t.x + t.w, ex + ew) - Math.max(t.x, ex);
+            const oy = Math.min(t.y + t.h, ey + eh) - Math.max(t.y, ey);
+            const PAD = 24; // 选中卡四周额外空隙（世界单位）
+            if (ox > 0 && oy > 0) {
+              if (ox <= oy) dx = t.x + t.w / 2 < ex + ew / 2 ? -(ox + PAD) : ox + PAD;
+              else dy = t.y + t.h / 2 < ey + eh / 2 ? -(oy + PAD) : oy + PAD;
+            }
+          }
           return (
             <div
               key={key}
@@ -309,22 +326,30 @@ export default function InfiniteView() {
               }}
               onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
             >
-              {/* 内层负责缩放动画：只有被选中的那张动，平移始终零延迟。
-                  边框/圆角按放大倍率反比缩放，保证视觉尺寸恒定 */}
+              {/* 推开层：只在选中状态变化时动画，平移零延迟 */}
               <div
-                className="absolute inset-0 overflow-hidden transition-[transform,filter,box-shadow] duration-500 ease-out"
+                className="absolute inset-0"
                 style={{
-                  transform: `scale(${picked ? pickScale : 1})`,
-                  transformOrigin: "center",
-                  filter: pickedId && !picked ? "brightness(0.78)" : "none",
-                  borderRadius: picked ? 2 / pickScale : 0,
-                  boxShadow: picked
-                    ? `0 0 0 ${1.2 / pickScale}px rgba(255,255,255,.95), 0 ${14 / pickScale}px ${50 / pickScale}px rgba(0,0,0,.42)`
-                    : selected
-                      ? "inset 0 0 0 2px rgba(167,139,250,.6)"
-                      : "none",
+                  transform: `translate3d(${dx * z}px, ${dy * z}px, 0)`,
+                  transition: "transform 450ms cubic-bezier(.22,1,.36,1)",
                 }}
               >
+                {/* 内层负责缩放动画。
+                    边框/圆角按放大倍率反比缩放，保证视觉尺寸恒定 */}
+                <div
+                  className="absolute inset-0 overflow-hidden transition-[transform,filter,box-shadow] duration-500 ease-out"
+                  style={{
+                    transform: `scale(${picked ? pickScale : 1})`,
+                    transformOrigin: "center",
+                    filter: pickedId && !picked ? "brightness(0.78)" : "none",
+                    borderRadius: picked ? 2 / pickScale : 0,
+                    boxShadow: picked
+                      ? `0 0 0 ${1.2 / pickScale}px rgba(255,255,255,.95), 0 ${14 / pickScale}px ${50 / pickScale}px rgba(0,0,0,.42)`
+                      : selected
+                        ? "inset 0 0 0 2px rgba(167,139,250,.6)"
+                        : "none",
+                  }}
+                >
                 <img
                   src={thumbUrl(t.id)}
                   alt=""
@@ -333,6 +358,7 @@ export default function InfiniteView() {
                   className="w-full h-full object-cover pointer-events-none"
                   style={{ backgroundColor: "#15171c" }}
                 />
+                </div>
               </div>
             </div>
           );
