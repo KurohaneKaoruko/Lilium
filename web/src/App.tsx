@@ -56,6 +56,10 @@ export default function App() {
       if (e.key === "Escape") {
         if (st.lightboxId) return; // Lightbox 自己处理
         if (st.view === "infinite") return; // 无限视图自己处理:先收起,再退出
+        if (st.chromeLeft) {
+          st.setChromeLeft(false);
+          return;
+        }
         st.clearSelection();
         st.setDetail(null);
       }
@@ -88,15 +92,15 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  const fullscreen = view === "infinite";
+  // 沉浸模式 = 全视图统一 UI(与无限视图同一套悬浮工作台),差别只在内容排布
+  const fullscreen = true;
   const chromeLeft = useStore((s) => s.chromeLeft);
   const setChromeLeft = useStore((s) => s.setChromeLeft);
 
-  // 沉浸视图:顶栏固定常驻;左栏是唯一可收起的面板。
+  // 沉浸模式:顶栏固定常驻;左栏是唯一可收起的面板。
   // - 指针进左边缘热区 → 展开左栏
   // - 离开左栏面板(未悬停在任何面板上) → 收回图标轨
   useEffect(() => {
-    if (!fullscreen) return;
     const EDGE = 6;
     const onMove = (e: PointerEvent) => {
       const st = useStore.getState();
@@ -104,54 +108,53 @@ export default function App() {
     };
     window.addEventListener("pointermove", onMove);
     return () => window.removeEventListener("pointermove", onMove);
-  }, [fullscreen, setChromeLeft]);
+  }, [setChromeLeft]);
 
   // 点击墙面(拖拽/滚轮)→ 左栏收回
   useEffect(() => {
-    if (!fullscreen) return;
     const onWall = () => {
       const st = useStore.getState();
       if (!st.chromeHovering && st.chromeLeft) st.setChromeLeft(false);
     };
     window.addEventListener("lilium:wall-interact", onWall);
     return () => window.removeEventListener("lilium:wall-interact", onWall);
-  }, [fullscreen]);
+  }, []);
 
   return (
     <div className="h-full flex flex-col">
-      {!fullscreen && <TopBar onImported={() => setToast("导入完成")} />}
       <div className="flex-1 flex min-h-0">
-        {!fullscreen && <Sidebar />}
-        <main className={fullscreen ? "flex-1 flex min-w-0 relative" : "flex-1 flex flex-col min-w-0 relative"}>
-          {!fullscreen && similarIds && (
-            <div className="h-9 shrink-0 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-2 px-3 text-xs text-amber-300">
+        <main className="flex-1 flex min-w-0 relative">
+          {similarIds && (
+            <div className="absolute top-11 inset-x-0 z-20 h-9 bg-amber-500/15 backdrop-blur border-b border-amber-500/20 flex items-center gap-2 px-3 text-xs text-amber-300">
               <Wand2 size={13} />
               相似图片结果 · {similarIds.length} 张
               <button className="btn ml-auto" onClick={exitSimilar}>返回</button>
             </div>
           )}
-          {view === "masonry" && <MasonryView />}
-          {view === "grid" && <GridView />}
-          {view === "list" && <ListView />}
+          {/* 经典排列视图:视口从固定顶栏下方开始,共享同一套悬浮 chrome */}
+          <div className="flex-1 flex min-w-0 relative pt-11">
+            {view === "masonry" && <MasonryView />}
+            {view === "grid" && <GridView />}
+            {view === "list" && <ListView />}
+            {view === "collections" && <CollectionsView />}
+          </div>
           {view === "infinite" && <InfiniteView />}
-          {view === "collections" && <CollectionsView />}
-          {!fullscreen && <SelectionBar />}
+          <SelectionBar />
         </main>
-        {!fullscreen && <DetailPanelWrapper />}
       </div>
+      {/* 全视图统一的悬浮工作台:顶栏(含窗口钮) + 左栏,差别只在内容排布 */}
+      <FloatingChrome>
+        {(mode) =>
+          mode === "top" ? (
+            <TopBar immersive onImported={() => setToast("导入完成")} />
+          ) : (
+            <Sidebar immersive collapsed={!chromeLeft} />
+          )
+        }
+      </FloatingChrome>
 
-      {/* 沉浸视图的悬浮工作台:顶栏(含窗口钮)与左栏相互独立,各自呼出/收起 */}
-      {fullscreen && (
-        <FloatingChrome>
-          {(mode) =>
-            mode === "top" ? (
-              <TopBar immersive onImported={() => setToast("导入完成")} />
-            ) : (
-              <Sidebar immersive collapsed={!chromeLeft} />
-            )
-          }
-        </FloatingChrome>
-      )}
+      {/* 详情面板:所有视图通用的右侧浮层 */}
+      <DetailPanelWrapper />
 
       <Lightbox />
       <ContextMenu />
@@ -184,6 +187,7 @@ function DetailPanelWrapper() {
 function FloatingChrome({ children }: { children: (mode: "top" | "left") => React.ReactNode }) {
   const chromeLeft = useStore((s) => s.chromeLeft);
   const setChromeLeft = useStore((s) => s.setChromeLeft);
+  const detailId = useStore((s) => s.detailId);
 
   const hold = () => useStore.setState({ chromeHovering: true });
   const release = () => {
@@ -215,6 +219,23 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
       >
         {children("left")}
       </div>
+      {/* 详情浮层:主区右侧滑出,避开固定顶栏 */}
+      {detailId && (
+        <div
+          data-chrome-detail
+          onPointerEnter={hold}
+          onPointerLeave={release}
+          className="absolute right-0 bottom-0 z-30 bg-panel/85 backdrop-blur-md border-l border-border/60 overflow-hidden"
+          style={{
+            top: 44,
+            width: 264,
+            transition: "width 340ms cubic-bezier(.22,1,.36,1), transform 340ms cubic-bezier(.22,1,.36,1)",
+            boxShadow: "-8px 0 24px rgba(0,0,0,.25)",
+          }}
+        >
+          <DetailPanel />
+        </div>
+      )}
     </>
   );
 }

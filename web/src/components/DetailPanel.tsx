@@ -97,7 +97,7 @@ export default function DetailPanel() {
   const dims = item.width ? `${item.width} × ${item.height}` : "—";
 
   return (
-    <aside className="w-64 shrink-0 bg-panel border-l border-border overflow-y-auto fade-in">
+    <aside className="w-64 h-full bg-transparent border-l-0 overflow-y-auto">
       {/* 预览 */}
       <div className="relative bg-black/40 group">
         {item.kind === "image" || item.kind === "video" ? (
