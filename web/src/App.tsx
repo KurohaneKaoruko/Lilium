@@ -262,33 +262,42 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
           <WindowControls />
         </div>
       </div>
-      {/* 左栏:完整侧栏,从左滑入 */}
+      {/* 左栏:同一个容器 —— 收起 = 48px 图标轨,悬停时原地张开成 224px 完整侧栏 */}
       <div
         data-chrome-left
-        onPointerEnter={hold}
+        onPointerEnter={() => {
+          hold();
+          setChromeLeft(true);
+        }}
         onPointerLeave={release}
-        className={`absolute left-0 top-0 bottom-0 z-30 transition-transform duration-300 ease-out ${
-          chromeLeft ? "translate-x-0" : "-translate-x-full"
-        }`}
+        className="absolute left-0 top-0 bottom-0 z-30 overflow-hidden"
+        style={{
+          width: chromeLeft ? 224 : 48,
+          transition: "width 280ms cubic-bezier(.22,1,.36,1)",
+          boxShadow: "8px 0 24px rgba(0,0,0,.25)",
+        }}
       >
-        <div className="h-full pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60 shadow-lg">
+        {/* 完整侧栏:始终挂载,张开后显现(收起时被容器裁掉、不可点) */}
+        <div
+          className="absolute inset-y-0 left-0 w-56 pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60"
+          style={{
+            opacity: chromeLeft ? 1 : 0,
+            pointerEvents: chromeLeft ? "auto" : "none",
+            transition: chromeLeft ? "opacity 220ms ease 70ms" : "opacity 120ms ease",
+          }}
+          aria-hidden={!chromeLeft}
+        >
           {children("left")}
         </div>
-      </div>
-      {/* 左栏收起态:窄图标轨,常驻;悬停展开完整侧栏 */}
-      <div
-        className={`absolute left-0 top-0 bottom-0 z-20 transition-opacity duration-200 ${
-          chromeLeft ? "opacity-0 pointer-events-none" : "opacity-100"
-        }`}
-      >
-        <MiniRail onExpand={() => setChromeLeft(true)} />
+        {/* 图标轨 = 侧栏的收起态(同一容器内,张开后淡出) */}
+        <MiniRail collapsed={chromeLeft} />
       </div>
     </>
   );
 }
 
-/** 收起态的左栏:窄图标轨 */
-function MiniRail({ onExpand }: { onExpand: () => void }) {
+/** 左栏收起态的图标轨:与完整侧栏同处一个容器,张开后淡出让位 */
+function MiniRail({ collapsed }: { collapsed: boolean }) {
   const filters = useStore((s) => s.filters);
   const setFilters = useStore((s) => s.setFilters);
   const resetFilters = useStore((s) => s.resetFilters);
@@ -303,8 +312,13 @@ function MiniRail({ onExpand }: { onExpand: () => void }) {
 
   return (
     <div
-      onPointerEnter={onExpand}
-      className="w-12 h-full bg-panel/85 backdrop-blur-md border-r border-border/60 flex flex-col items-center py-2 gap-1"
+      className="absolute inset-y-0 left-0 w-12 pt-11 bg-panel/85 backdrop-blur-md flex flex-col items-center py-2 gap-1"
+      style={{
+        opacity: collapsed ? 0 : 1,
+        pointerEvents: collapsed ? "none" : "auto",
+        transition: collapsed ? "opacity 120ms ease" : "opacity 220ms ease 60ms",
+      }}
+      aria-hidden={collapsed}
     >
       <div className="text-lg leading-none mb-1" title={info?.name ?? "Lilium"}>
         🌸
