@@ -254,50 +254,60 @@ export default function InfiniteView() {
         onPointerCancel={onPointerUp}
         onWheel={onWheelAnim}
       >
-        {tiles.map((t) => {
-          const key = `${t.blockX}:${t.blockY}:${t.slot}`;
-          const isPicked = !!t.expanded;
-          const selected = selection.has(t.id);
-          return (
-            <div
-              key={key}
-              data-tile={t.id}
-              data-key={key}
-              className="absolute"
-              style={{
-                transform: `translate3d(${t.x * z + tx}px, ${t.y * z + ty}px, 0)`,
-                width: t.w * z,
-                height: t.h * z,
-                zIndex: isPicked ? 20 : selected ? 5 : 1,
-                transition: animAllowed && !isPicked ? "transform 500ms cubic-bezier(.22,1,.36,1)" : "none",
-              }}
-              onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
-            >
+        {/* 镜头层:平移/缩放只在这一层 transform,纯合成,拖拽/滚轮零重排零拖影 */}
+        <div
+          className="absolute left-0 top-0 will-change-transform"
+          style={{ transform: `translate3d(${tx}px, ${ty}px, 0) scale(${z})`, transformOrigin: "0 0" }}
+        >
+          {tiles.map((t) => {
+            const key = `${t.blockX}:${t.blockY}:${t.slot}`;
+            const isPicked = !!t.expanded;
+            const selected = selection.has(t.id);
+            return (
               <div
-                className="absolute inset-0 overflow-hidden"
+                key={key}
+                data-tile={t.id}
+                data-key={key}
+                className="absolute"
                 style={{
-                  transition: "filter 450ms ease, box-shadow 450ms ease, border-radius 450ms ease",
-                  filter: picked && !isPicked ? "brightness(0.72)" : "none",
-                  borderRadius: isPicked ? 3 : 0,
-                  boxShadow: isPicked
-                    ? "0 0 0 1.5px rgba(255,255,255,.95), 0 0 0 5px rgba(255,255,255,.14), 0 24px 80px rgba(0,0,0,.6)"
-                    : selected
-                      ? "inset 0 0 0 2px rgba(167,139,250,.6)"
-                      : "none",
+                  // 世界坐标即像素(镜头层已缩放),重排时 left/top/w/h 可平滑过渡
+                  left: t.x,
+                  top: t.y,
+                  width: t.w,
+                  height: t.h,
+                  zIndex: isPicked ? 20 : selected ? 5 : 1,
+                  transition: animAllowed
+                    ? "left 480ms cubic-bezier(.22,1,.36,1), top 480ms cubic-bezier(.22,1,.36,1), width 480ms cubic-bezier(.22,1,.36,1), height 480ms cubic-bezier(.22,1,.36,1)"
+                    : "none",
                 }}
+                onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
               >
-                <img
-                  src={thumbUrl(t.id)}
-                  alt=""
-                  loading="lazy"
-                  draggable={false}
-                  className="w-full h-full object-cover pointer-events-none"
-                  style={{ backgroundColor: "#15171c" }}
-                />
+                <div
+                  className="absolute inset-0 overflow-hidden"
+                  style={{
+                    transition: "filter 450ms ease, box-shadow 450ms ease, border-radius 450ms ease",
+                    filter: picked && !isPicked ? "brightness(0.72)" : "none",
+                    borderRadius: isPicked ? 3 : 0,
+                    boxShadow: isPicked
+                      ? "0 0 0 1.5px rgba(255,255,255,.95), 0 0 0 5px rgba(255,255,255,.14), 0 24px 80px rgba(0,0,0,.6)"
+                      : selected
+                        ? "inset 0 0 0 2px rgba(167,139,250,.6)"
+                        : "none",
+                  }}
+                >
+                  <img
+                    src={thumbUrl(t.id)}
+                    alt=""
+                    loading="lazy"
+                    draggable={false}
+                    className="w-full h-full object-cover pointer-events-none"
+                    style={{ backgroundColor: "#15171c" }}
+                  />
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
 
       {/* 顶部/底部渐隐遮罩 */}
