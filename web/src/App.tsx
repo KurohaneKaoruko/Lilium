@@ -125,19 +125,22 @@ export default function App() {
     <div className="h-full flex flex-col">
       <div className="flex-1 flex min-h-0">
         <main className="flex-1 flex min-w-0 relative">
-          {/* 经典排列视图:视口从固定顶栏下方开始,并为左栏让位(同曲线过渡,不被遮挡) */}
-          <div
-            className="flex-1 flex min-w-0 relative pt-11"
-            style={{
-              marginLeft: chromeLeft ? 224 : 48,
-              transition: "margin-left 340ms cubic-bezier(.22,1,.36,1)",
-            }}
-          >
-            {view === "masonry" && <MasonryView />}
-            {view === "grid" && <GridView />}
-            {view === "list" && <ListView />}
-            {view === "collections" && <CollectionsView />}
-          </div>
+          {/* 经典排列视图:视口从固定顶栏下方开始,并为左栏让位(同曲线过渡,不被遮挡)。
+              无限视图时该容器不渲染 —— 空的 flex-1 会把墙挤成半屏 */}
+          {view !== "infinite" && (
+            <div
+              className="flex-1 flex min-w-0 relative pt-11"
+              style={{
+                marginLeft: chromeLeft ? 224 : 48,
+                transition: "margin-left 340ms cubic-bezier(.22,1,.36,1)",
+              }}
+            >
+              {view === "masonry" && <MasonryView />}
+              {view === "grid" && <GridView />}
+              {view === "list" && <ListView />}
+              {view === "collections" && <CollectionsView />}
+            </div>
+          )}
           {view === "infinite" && <InfiniteView />}
           {similarIds && (
             <div
