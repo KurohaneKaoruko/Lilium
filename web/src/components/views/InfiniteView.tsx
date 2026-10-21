@@ -457,8 +457,9 @@ export default function InfiniteView() {
                 onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
               >
                 <div
-                  className="absolute inset-0 overflow-hidden"
+                  className="absolute inset-0 overflow-hidden pointer-events-auto"
                   style={{
+                    cursor: "pointer",
                     transition: picked
                       ? `filter ${settle}ms ${easeCss}, box-shadow ${settle}ms ${easeCss}, border-radius ${settle}ms ${easeCss}`
                       : "none",
@@ -476,7 +477,7 @@ export default function InfiniteView() {
                     alt=""
                     loading="lazy"
                     draggable={false}
-                    className="w-full h-full object-cover pointer-events-none"
+                    className={`w-full h-full object-cover pointer-events-none ${isPicked ? "" : "tile-img"}`}
                     style={{ backgroundColor: "#15171c" }}
                   />
                 </div>
