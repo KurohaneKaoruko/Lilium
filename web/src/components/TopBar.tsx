@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, Link2, Import, X,
+  LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, X,
   FolderPlus, RefreshCcw, Keyboard, Settings, Shapes,
 } from "lucide-react";
 import { useStore, type ViewMode } from "../store/useStore";
-import { ImportPathModal } from "./modals/Modals";
 import { api } from "../api/client";
 
 const VIEWS: { key: ViewMode; icon: React.ReactNode; label: string }[] = [
@@ -26,7 +25,6 @@ const SORTS: { key: string; label: string }[] = [
 ];
 
 export default function TopBar({ onImported, immersive = false }: { onImported: () => void; immersive?: boolean }) {
-  const [importMode, setImportMode] = useState<null | "url" | "disk" | "library">(null);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
   // 沉浸模式:面板透明融入玻璃底,拖拽区交给外层 FloatingChrome
@@ -147,9 +145,6 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
         <span className="text-[11px] text-neutral-500 mr-1">
           {loading ? "加载中…" : `${total} 项`}
         </span>
-        <button className="btn" onClick={() => setImportMode("url")} title="从 URL 导入"><Link2 size={14} /> URL</button>
-        <button className="btn" onClick={() => setImportMode("disk")} title="从磁盘路径导入"><Import size={14} /> 磁盘</button>
-        <button className="btn" onClick={() => setImportMode("library")} title="导入图片管理器的库目录"><FolderPlus size={14} /> 库导入</button>
         <label className="btn-primary cursor-pointer">
           <Upload size={13} />
           导入
@@ -160,7 +155,6 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
         </button>
       </div>
 
-      {importMode && <ImportPathModal mode={importMode} onClose={() => setImportMode(null)} />}
     </header>
   );
 }

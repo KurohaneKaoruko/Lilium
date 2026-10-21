@@ -213,16 +213,11 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         <div
           className={`px-2 py-2 ${collapsed ? "flex flex-col items-start gap-0.5" : ""}`}
         >
-          {/* 文件夹:窄栏显示根级文件夹图标(≤5)+ 新建 */}
+          {/* 文件夹:窄栏只显示一个入口图标(点击展开侧栏看完整树) */}
           {collapsed ? (
             <>
-              {tree.slice(0, 5).map((n) => (
-                <RailBtn key={n.id} title={n.name} active={filters.folderId === n.id} onClick={() => setFilters({ folderId: n.id, trash: false, smartId: null })}>
-                  <FolderIcon size={15} />
-                </RailBtn>
-              ))}
-              <RailBtn title="新建文件夹" onClick={newFolder}>
-                <FolderPlus size={15} />
+              <RailBtn title="文件夹" active={!!filters.folderId} onClick={() => setChromeLeft(true)}>
+                <FolderIcon size={15} />
               </RailBtn>
               <RailBtn title="智能文件夹" onClick={() => setChromeLeft(true)}>
                 <Bookmark size={15} />
