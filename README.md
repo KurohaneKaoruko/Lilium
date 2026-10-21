@@ -101,3 +101,7 @@ web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 
 - 缩略图 / EXIF：无需外部依赖（纯 Rust）
 - 视频缩略图：可选安装 `ffmpeg`
+
+## 📄 许可证
+
+[AGPL-3.0](LICENSE) © KurohaneKaoruko
