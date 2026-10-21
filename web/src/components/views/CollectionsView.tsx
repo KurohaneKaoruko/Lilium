@@ -25,9 +25,9 @@ interface Card {
 /** 卡片世界尺寸(封面 240×132 + 文本区) */
 const CARD_W = 240;
 const CARD_H = 196;
-/** 世界网格步长(含呼吸间距),哈希抖动避免对齐感 */
-const GRID_X = 340;
-const GRID_Y = 260;
+/** 世界网格步长(含呼吸间距) */
+const GRID_X = 330;
+const GRID_Y = 250;
 
 /** 确定性哈希:同 key 永远同位置 */
 function hash32(s: string): number {
@@ -98,7 +98,43 @@ export default function CollectionsView() {
     }));
   }, [tab, folders, tags]);
 
-  const openCard = (c: Card) => {
+  const openCard = (c: Card, at?: { x: number; y: number }) => {
+    // 聚焦放大:镜头弹簧推向卡片世界位置并放大,落定后进入分类
+    if (at) {
+      const p = placed.find((q) => q.card.key === c.key);
+      if (p) {
+        const z1 = 1.35;
+        const endTx = size.w / 2 - p.x * z1;
+        const endTy = size.h / 2 - p.y * z1;
+        const dist = Math.hypot(endTx - cam.current.tx, endTy - cam.current.ty);
+        const ease = reflowCurve(Math.max(200, dist / z1));
+        stopCamAnim();
+        const from = { ...cam.current };
+        const t0 = performance.now();
+        const handle = setInterval(() => {
+          const prog = Math.min(1, (performance.now() - t0) / ease.durationMs);
+          const e = ease.ease(prog);
+          cam.current.tx = from.tx + (endTx - from.tx) * e;
+          cam.current.ty = from.ty + (endTy - from.ty) * e;
+          cam.current.z = from.z + (z1 - from.z) * e;
+          applyCamera();
+          if (prog >= 1) {
+            clearInterval(handle);
+            window.setTimeout(() => {
+              if (c.kind === "folder") {
+                setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
+              } else {
+                setFilters({ tag: c.id, folderId: null, trash: false });
+              }
+              useStore.setState({ view: "masonry" });
+              fetchItems();
+            }, 140);
+          }
+        }, 16);
+        camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
+        return;
+      }
+    }
     if (c.kind === "folder") {
       setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
     } else {
@@ -108,25 +144,19 @@ export default function CollectionsView() {
     fetchItems();
   };
 
-  /** 卡片世界坐标:网格 + 哈希抖动 + 轻微旋转,云质心在原点(少量卡片也居中) */
+  /** 卡片世界坐标:整齐网格,云质心在原点(少量卡片也居中) */
   const placed = useMemo(() => {
     const n = cards.length;
-    // 列数随卡数扩展,行数兜底,网格整体以原点为中心
     const cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.4)));
+    const rows = Math.ceil(n / cols);
     return cards.map((c, i) => {
-      const h = hash32(c.key);
       const gx = i % cols;
       const gy = Math.floor(i / cols);
-      const rows = Math.ceil(n / cols);
-      const jx = ((h >>> 8) % 100) / 100 - 0.5;
-      const jy = ((h >>> 16) % 100) / 100 - 0.5;
-      const rot = (((h >>> 24) % 100) / 100 - 0.5) * 2.4;
       return {
         card: c,
-        x: (gx - (cols - 1) / 2) * GRID_X + jx * 70,
-        y: (gy - (rows - 1) / 2) * GRID_Y + jy * 60,
-        rot,
-        h,
+        x: (gx - (cols - 1) / 2) * GRID_X,
+        y: (gy - (rows - 1) / 2) * GRID_Y,
+        h: hash32(c.key),
       };
     });
   }, [cards]);
@@ -295,7 +325,7 @@ export default function CollectionsView() {
       const key = cardEl?.dataset.card;
       if (!key) return;
       const card = cards.find((c) => c.key === key);
-      if (card) openCard(card);
+      if (card) openCard(card, { x: e.clientX, y: e.clientY });
     }
   };
 
@@ -370,7 +400,7 @@ export default function CollectionsView() {
           onWheel={onWheel}
         >
           <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
-            {placed.map(({ card: c, x, y, rot, h }) => (
+            {placed.map(({ card: c, x, y, h }) => (
               <div
                 key={c.key}
                 data-card={c.key}
@@ -380,13 +410,12 @@ export default function CollectionsView() {
                   top: y,
                   width: CARD_W,
                   zIndex: 10 + (h % 50),
-                  transform: `rotate(${rot.toFixed(2)}deg)`,
                 }}
               >
                 <div
                   className="rounded-2xl overflow-hidden border border-white/10 bg-panel/95 backdrop-blur pointer-events-auto
                              shadow-[0_20px_50px_rgba(0,0,0,.5)] transition-all duration-300
-                             group-hover:-translate-y-2 group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]
+                             group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]
                              group-hover:border-violet-400/40"
                   style={{ transform: "translateZ(0)" }}
                 >
