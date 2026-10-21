@@ -372,7 +372,16 @@ export default function InfiniteView() {
         return;
       }
       const prev = lastClick.current;
-      if (prev && prev.key === key && Date.now() - prev.t < 350) return;
+      const id = tileEl.dataset.tile;
+      if (prev && prev.key === key && Date.now() - prev.t < 350) {
+        // 双击(350ms 内同瓦片二次单击)→ 大图预览
+        lastClick.current = null;
+        if (id) {
+          select(id, "set");
+          setLightbox(id);
+        }
+        return;
+      }
       lastClick.current = { key, t: Date.now() };
       if (pickedRef.current?.bx === bx && pickedRef.current?.by === by && pickedRef.current?.slot === slot) {
         applyPicked(null);
@@ -396,6 +405,17 @@ export default function InfiniteView() {
     if (!camAnim.current) startCamAnim();
     camAnim.current!.wx -= dx;
     camAnim.current!.wy -= dy;
+  };
+
+  /** 兜底:容器上原生 dblclick(合成单击检测可能因瓦片重排丢序)也打开灯箱 */
+  const onContainerDoubleClick = (e: React.MouseEvent) => {
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
+    const id = tileEl?.dataset.tile;
+    if (!id) return;
+    e.stopPropagation();
+    select(id, "set");
+    setLightbox(id);
   };
 
   const onTileDoubleClick = (e: React.MouseEvent, id: string) => {
@@ -437,6 +457,7 @@ export default function InfiniteView() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onWheel={onWheel}
+        onDoubleClick={onContainerDoubleClick}
       >
         <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
           {tiles.map((t) => {
