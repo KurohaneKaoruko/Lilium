@@ -286,14 +286,14 @@ export default function InfiniteView() {
           const picked = t === nearestPickedTile;
           const selected = selection.has(t.id);
           const key = `${t.id}#${Math.round(t.x)}x${Math.round(t.y)}`;
-          // 选中放大倍率：约 66% 视口高、55% 视口宽封顶，限制在 1.15–4
+          // 选中放大倍率：约 72% 视口高、52% 视口宽封顶（对齐参考的展示占比）
           let pickScale = 1;
           if (picked) {
             const sh = t.h * z;
             const sw = t.w * z;
             pickScale = Math.min(
               4,
-              Math.max(1.15, Math.min((size.h * 0.66) / sh, (size.w * 0.55) / sw)),
+              Math.max(1.15, Math.min((size.h * 0.72) / sh, (size.w * 0.52) / sw)),
             );
           }
           return (
@@ -309,17 +309,17 @@ export default function InfiniteView() {
               }}
               onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
             >
-              {/* 内层负责缩放动画：只有被选中的那张动，平移始终零延迟 */}
+              {/* 内层负责缩放动画：只有被选中的那张动，平移始终零延迟。
+                  边框/圆角按放大倍率反比缩放，保证视觉尺寸恒定 */}
               <div
-                className="absolute inset-0 overflow-hidden transition-[transform,opacity,box-shadow,filter] duration-500 ease-out"
+                className="absolute inset-0 overflow-hidden transition-[transform,filter,box-shadow] duration-500 ease-out"
                 style={{
                   transform: `scale(${picked ? pickScale : 1})`,
                   transformOrigin: "center",
-                  opacity: pickedId ? (picked ? 1 : 0.62) : 0.92,
-                  filter: pickedId && !picked ? "brightness(0.5)" : "none",
-                  borderRadius: picked ? 4 : 0,
+                  filter: pickedId && !picked ? "brightness(0.78)" : "none",
+                  borderRadius: picked ? 2 / pickScale : 0,
                   boxShadow: picked
-                    ? "0 0 0 1.5px rgba(255,255,255,.9), 0 24px 70px rgba(0,0,0,.5)"
+                    ? `0 0 0 ${1.2 / pickScale}px rgba(255,255,255,.95), 0 ${14 / pickScale}px ${50 / pickScale}px rgba(0,0,0,.42)`
                     : selected
                       ? "inset 0 0 0 2px rgba(167,139,250,.6)"
                       : "none",
