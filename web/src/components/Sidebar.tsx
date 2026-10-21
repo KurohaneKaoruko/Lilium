@@ -175,7 +175,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
   return (
     <aside
       className={`flex flex-col overflow-hidden overflow-y-auto ${
-        immersive ? "h-full bg-panel/85 backdrop-blur-md border-r border-border/60" : "w-56 shrink-0 bg-panel border-r border-border"
+        immersive ? "h-full pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60" : "w-56 shrink-0 bg-panel border-r border-border"
       }`}
       style={{
         width: immersive ? (collapsed ? 48 : 224) : undefined,
@@ -183,20 +183,20 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         boxShadow: immersive ? "8px 0 24px rgba(0,0,0,.25)" : undefined,
       }}
     >
-      {/* 库信息 */}
-      <div className={`py-3 border-b border-border ${collapsed ? "flex justify-center" : "px-3"}`}>
-        <div className={`flex items-center gap-2 ${collapsed ? "" : "min-w-[224px]"}`}>
-          <span className="text-lg shrink-0">🌸</span>
-          {!collapsed && (
+      {/* 库信息(沉浸态不显示,避免顶栏遮挡) */}
+      {!immersive && (
+        <div className="px-3 py-3 border-b border-border">
+          <div className="flex items-center gap-2">
+            <span className="text-lg shrink-0">🌸</span>
             <div className="min-w-0">
               <div className="text-xs font-medium truncate">{info?.name ?? "Lilium"}</div>
               <div className="text-[10px] text-neutral-500">
                 {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : ""}
               </div>
             </div>
-          )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 快速入口 */}
       <div className={`py-2 border-b border-border ${collapsed ? "flex flex-col items-center gap-1" : "px-2 space-y-0.5 min-w-[224px]"}`}>
