@@ -184,35 +184,62 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
       }}
     >
       {/* 库信息 */}
-      <div className="px-3 py-3 border-b border-border min-w-[224px]">
-        <div className="flex items-center gap-2">
+      <div className={`py-3 border-b border-border ${collapsed ? "flex justify-center" : "px-3"}`}>
+        <div className={`flex items-center gap-2 ${collapsed ? "" : "min-w-[224px]"}`}>
           <span className="text-lg shrink-0">🌸</span>
-          <div className="min-w-0">
-            <div className="text-xs font-medium truncate">{info?.name ?? "Lilium"}</div>
-            <div className="text-[10px] text-neutral-500">
-              {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : ""}
+          {!collapsed && (
+            <div className="min-w-0">
+              <div className="text-xs font-medium truncate">{info?.name ?? "Lilium"}</div>
+              <div className="text-[10px] text-neutral-500">
+                {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : ""}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
       {/* 快速入口 */}
-      <div className="px-2 py-2 space-y-0.5 border-b border-border min-w-[224px]">
-        <SideBtn active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={14} />} label="全部图片" />
-        <SideBtn active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={14} />} label="未分类" />
-        <SideBtn active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={14} />} label="未加标签" />
-        <SideBtn active={filters.trash} onClick={() => setFilters({ trash: !filters.trash, folderId: null, smartId: null })} icon={<Trash2 size={14} />} label="回收站" />
+      <div className={`py-2 border-b border-border ${collapsed ? "flex flex-col items-center gap-1" : "px-2 space-y-0.5 min-w-[224px]"}`}>
+        <SideBtn collapsed={collapsed} active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={16} />} label="全部图片" />
+        <SideBtn collapsed={collapsed} active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={16} />} label="未分类" />
+        <SideBtn collapsed={collapsed} active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={16} />} label="未加标签" />
+        <SideBtn collapsed={collapsed} active={filters.trash} onClick={() => setFilters({ trash: !filters.trash, folderId: null, smartId: null })} icon={<Trash2 size={16} />} label="回收站" />
       </div>
 
-      {/* 文件夹 */}
-      <Section title="文件夹" action={<button className="btn !p-1" onClick={newFolder} title="新建文件夹"><FolderPlus size={13} /></button>}>
-        <div className="px-1">
-          {tree.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">右键/按钮新建文件夹</div>}
-          {tree.map((n) => <FolderNode key={n.id} node={n} depth={0} />)}
-        </div>
-      </Section>
+      {collapsed ? (
+        <>
+          {/* 窄态:文件夹只显示根级图标 */}
+          <div className="py-2 border-b border-border flex flex-col items-center gap-1">
+            {tree.slice(0, 6).map((n) => (
+              <button
+                key={n.id}
+                title={n.name}
+                className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+                  filters.folderId === n.id
+                    ? "bg-violet-500/25 text-violet-200"
+                    : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
+                }`}
+                onClick={() => setFilters({ folderId: n.id, trash: false, smartId: null })}
+              >
+                <FolderIcon size={16} />
+              </button>
+            ))}
+          </div>
+          <div className="mt-auto py-2 flex justify-center text-[10px] text-neutral-600 border-t border-border w-full">
+            Lilium
+          </div>
+        </>
+      ) : (
+        <>
+          {/* 文件夹 */}
+          <Section title="文件夹" action={<button className="btn !p-1" onClick={newFolder} title="新建文件夹"><FolderPlus size={13} /></button>}>
+            <div className="px-1">
+              {tree.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">右键/按钮新建文件夹</div>}
+              {tree.map((n) => <FolderNode key={n.id} node={n} depth={0} />)}
+            </div>
+          </Section>
 
-      {/* 智能文件夹 */}
+          {/* 智能文件夹 */}
       <Section title="智能文件夹" action={<button className="btn !p-1" onClick={saveSmart} title="将当前筛选保存为智能文件夹"><Bookmark size={13} /></button>}>
         <div className="px-1">
           {smartFolders.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">保存当前筛选条件，快速复用</div>}
@@ -235,93 +262,95 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         </div>
       </Section>
 
-      {/* 类型 */}
-      <Section title="类型">
-        <div className="px-2 flex flex-wrap gap-1">
-          {KINDS.map((k) => (
-            <button
-              key={k.key}
-              className={`px-2 py-1 rounded text-[11px] border transition-colors ${
-                filters.kinds.includes(k.key)
-                  ? "bg-violet-500/20 border-violet-400/50 text-violet-200"
-                  : "border-border text-neutral-400 hover:bg-white/5"
-              }`}
-              onClick={() => toggleKind(k.key)}
-            >
-              {k.label}
-            </button>
-          ))}
-        </div>
-      </Section>
-
-      {/* 评分 */}
-      <Section title="评分">
-        <div className="px-2 flex items-center gap-1">
-          {[0, 1, 2, 3, 4, 5].map((n) => (
-            <button
-              key={n}
-              title={n === 0 ? "全部评分" : `${n} 星及以上`}
-              className={`px-1.5 py-0.5 rounded text-[11px] shrink-0 ${
-                filters.ratingMin === n ? "bg-violet-500/25 text-violet-200" : "text-neutral-500 hover:bg-white/5"
-              }`}
-              onClick={() => setFilters({ ratingMin: n })}
-            >
-              {n === 0 ? "A" : `${n}★`}
-            </button>
-          ))}
-          <Star size={11} className="text-amber-400/60 ml-0.5" />
-        </div>
-      </Section>
-
-      {/* 颜色 */}
-      <Section title="颜色" action={filters.color ? <button className="btn !p-1" onClick={() => setFilters({ color: null })}><X size={12} /></button> : undefined}>
-        <div className="px-2 flex flex-wrap items-center gap-1.5">
-          {PRESET_COLORS.map((c) => (
-            <button
-              key={c}
-              className={`w-5 h-5 rounded-full border-2 transition-transform hover:scale-110 ${filters.color === c ? "border-white" : "border-transparent"}`}
-              style={{ backgroundColor: c }}
-              onClick={() => setFilters({ color: c, colorTolerance: 60 })}
-              title={c}
-            />
-          ))}
-          <label className="w-5 h-5 rounded-full border border-dashed border-neutral-500 flex items-center justify-center cursor-pointer hover:border-violet-400" title="自定义颜色">
-            <Palette size={10} className="text-neutral-400" />
-            <input
-              type="color"
-              className="sr-only"
-              onChange={(e) => setFilters({ color: e.target.value, colorTolerance: 60 })}
-            />
-          </label>
-        </div>
-      </Section>
-
-      {/* 标签 */}
-      <Section title={`标签 (${tags.length})`}>
-        <div className="px-2 pb-1">
-          <input className="input w-full mb-1.5" placeholder="搜索标签…" value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} />
-        </div>
-        <div className="px-1 flex flex-col">
-          {filteredTags.slice(0, 60).map((t) => (
-            <div
-              key={t.name}
-              className={`group flex items-center gap-2 rounded-md px-2 py-[4px] cursor-pointer text-xs ${
-                filters.tag === t.name ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
-              }`}
-              onClick={() => setFilters({ tag: filters.tag === t.name ? null : t.name })}
-            >
-              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
-              <span className="truncate flex-1">{t.name}</span>
-              <span className="text-[10px] text-neutral-600">{t.count}</span>
+          {/* 类型 */}
+          <Section title="类型">
+            <div className="px-2 flex flex-wrap gap-1">
+              {KINDS.map((k) => (
+                <button
+                  key={k.key}
+                  className={`px-2 py-1 rounded text-[11px] border transition-colors ${
+                    filters.kinds.includes(k.key)
+                      ? "bg-violet-500/20 border-violet-400/50 text-violet-200"
+                      : "border-border text-neutral-400 hover:bg-white/5"
+                  }`}
+                  onClick={() => toggleKind(k.key)}
+                >
+                  {k.label}
+                </button>
+              ))}
             </div>
-          ))}
-          {filteredTags.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">暂无标签</div>}
-        </div>
-      </Section>
+          </Section>
 
-      <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border">
-        Lilium · 本地优先的图片管理
-      </div>
+          {/* 评分 */}
+          <Section title="评分">
+            <div className="px-2 flex items-center gap-1">
+              {[0, 1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  title={n === 0 ? "全部评分" : `${n} 星及以上`}
+                  className={`px-1.5 py-0.5 rounded text-[11px] shrink-0 ${
+                    filters.ratingMin === n ? "bg-violet-500/25 text-violet-200" : "text-neutral-500 hover:bg-white/5"
+                  }`}
+                  onClick={() => setFilters({ ratingMin: n })}
+                >
+                  {n === 0 ? "A" : `${n}★`}
+                </button>
+              ))}
+              <Star size={11} className="text-amber-400/60 ml-0.5" />
+            </div>
+          </Section>
+
+          {/* 颜色 */}
+          <Section title="颜色" action={filters.color ? <button className="btn !p-1" onClick={() => setFilters({ color: null })}><X size={12} /></button> : undefined}>
+            <div className="px-2 flex flex-wrap items-center gap-1.5">
+              {PRESET_COLORS.map((c) => (
+                <button
+                  key={c}
+                  className={`w-5 h-5 rounded-full border-2 transition-transform hover:scale-110 ${filters.color === c ? "border-white" : "border-transparent"}`}
+                  style={{ backgroundColor: c }}
+                  onClick={() => setFilters({ color: c, colorTolerance: 60 })}
+                  title={c}
+                />
+              ))}
+              <label className="w-5 h-5 rounded-full border border-dashed border-neutral-500 flex items-center justify-center cursor-pointer hover:border-violet-400" title="自定义颜色">
+                <Palette size={10} className="text-neutral-400" />
+                <input
+                  type="color"
+                  className="sr-only"
+                  onChange={(e) => setFilters({ color: e.target.value, colorTolerance: 60 })}
+                />
+              </label>
+            </div>
+          </Section>
+
+          {/* 标签 */}
+          <Section title={`标签 (${tags.length})`}>
+            <div className="px-2 pb-1">
+              <input className="input w-full mb-1.5" placeholder="搜索标签…" value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} />
+            </div>
+            <div className="px-1 flex flex-col">
+              {filteredTags.slice(0, 60).map((t) => (
+                <div
+                  key={t.name}
+                  className={`group flex items-center gap-2 rounded-md px-2 py-[4px] cursor-pointer text-xs ${
+                    filters.tag === t.name ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
+                  }`}
+                  onClick={() => setFilters({ tag: filters.tag === t.name ? null : t.name })}
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
+                  <span className="truncate flex-1">{t.name}</span>
+                  <span className="text-[10px] text-neutral-600">{t.count}</span>
+                </div>
+              ))}
+              {filteredTags.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1">暂无标签</div>}
+            </div>
+          </Section>
+
+          <div className="mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border">
+            Lilium · 本地优先的图片管理
+          </div>
+        </>
+      )}
     </aside>
   );
 }
@@ -341,7 +370,20 @@ function Section({ title, action, children }: { title: string; action?: React.Re
   );
 }
 
-function SideBtn({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+function SideBtn({ active, onClick, icon, label, collapsed = false }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; collapsed?: boolean }) {
+  if (collapsed) {
+    return (
+      <button
+        title={label}
+        className={`w-9 h-9 rounded-lg flex items-center justify-center transition-colors ${
+          active ? "bg-violet-500/25 text-violet-200" : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
+        }`}
+        onClick={onClick}
+      >
+        {icon}
+      </button>
+    );
+  }
   return (
     <button
       className={`w-full flex items-center gap-2 rounded-md px-2 py-[6px] text-xs transition-colors ${
