@@ -105,20 +105,51 @@ export class MosaicLayout {
     return this.tiles;
   }
 
-  /** 展开某实例(传 null 收起)。返回受影响范围内的瓦片增量 */
+  /** 展开某实例(传 null 收起);受影响块的缓存立即失效以便重排 */
   setExpanded(blockX: number, blockY: number, slot: number) {
-    this.expandedKey = `${blockX}:${blockY}:${slot}`;
+    const key = `${blockX}:${blockY}:${slot}`;
+    if (this.expandedKey === key) return;
+    const prev = this.expandedBlock();
+    this.expandedKey = key;
+    if (prev) this.invalidateBlock(prev.bx, prev.by);
+    this.invalidateBlock(blockX, blockY);
   }
 
   clearExpanded() {
+    if (!this.expandedKey) return;
+    const prev = this.expandedBlock();
     this.expandedKey = null;
+    if (prev) this.invalidateBlock(prev.bx, prev.by);
+  }
+
+  private expandedBlock() {
+    if (!this.expandedKey) return null;
+    const [bx, by] = this.expandedKey.split(":").map(Number);
+    return { bx, by };
+  }
+
+  /** 丢弃某块已生成的瓦片(展开/收起后矩形全变) */
+  private invalidateBlock(bx: number, by: number) {
+    this.tiles = this.tiles.filter((t) => !(t.blockX === bx && t.blockY === by));
+    for (let s = 0; s < SLOTS_PER_BLOCK; s++) this.emitted.delete(`${bx}:${by}:${s}`);
   }
 
   private orientationOf(bx: number, by: number): number {
     const cellCol = ((bx % this.geometry.blocksPerRow) + this.geometry.blocksPerRow) % this.geometry.blocksPerRow;
     const cellRow = ((by % this.geometry.blockRows) + this.geometry.blockRows) % this.geometry.blockRows;
     const template = (cellCol + cellRow * 2) % TEMPLATES.length;
-    return template * REFLECTION_COUNT + (mixBlockCoords(bx, by) % REFLECTION_COUNT);
+    const orientation = template * REFLECTION_COUNT + (mixBlockCoords(bx, by) % REFLECTION_COUNT);
+    // WALL_REFLOWS 的维度是 [template][orientationInTemplate][expandedSlot]
+    // orientationInTemplate = orientation % REFLECTION_COUNT(镜像),模板已由 template 决定
+    return orientation;
+  }
+
+  /** 该块/槽位在展开态使用的重排表(无则返回 null) */
+  private reflowFor(bx: number, by: number, slot: number): BlockSlot[] | null {
+    const orientation = this.orientationOf(bx, by);
+    const template = orientation % TEMPLATES.length;
+    const mirror = orientation % REFLECTION_COUNT;
+    return WALL_REFLOWS[template]?.[mirror]?.[slot] ?? null;
   }
 
   /** 一个槽位在普通态的世界矩形 */
@@ -170,11 +201,7 @@ export class MosaicLayout {
         // 展开块:emit 重排后的 12 槽;普通块:emit 模板 12 槽
         const isExpandedBlock = this.expandedKey?.startsWith(`${bx}:${by}:`) ?? false;
         const expSlot = isExpandedBlock ? Number(this.expandedKey!.split(":")[2]) : -1;
-        const layout: BlockSlot[] | null = isExpandedBlock
-          ? WALL_REFLOWS[
-              this.orientationOf(bx, by) % TEMPLATES.length
-            ]?.[this.orientationOf(bx, by) % REFLECTION_COUNT]?.[expSlot]
-          : null;
+        const layout = isExpandedBlock ? this.reflowFor(bx, by, expSlot) : null;
         for (let slot = 0; slot < SLOTS_PER_BLOCK; slot++) {
           const key = `${bx}:${by}:${slot}`;
           if (this.emitted.has(key)) continue;

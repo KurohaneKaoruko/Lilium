@@ -47,20 +47,18 @@ export default function InfiniteView() {
     return () => ro.disconnect();
   }, []);
 
-  // 布局引擎实例;picked 变化同步给引擎(影响块内重排)
-  const layoutRef = useRef<MosaicLayout | null>(null);
-  const layout = useMemo(() => {
-    const l = buildMosaic(items.map((it) => ({ id: it.id, aspect: 1 })));
-    layoutRef.current = l;
-    return l;
-  }, [items]);
+  // 布局引擎实例
+  const layout = useMemo(() => buildMosaic(items.map((it) => ({ id: it.id, aspect: 1 }))), [items]);
 
-  useEffect(() => {
-    const l = layoutRef.current;
-    if (!l) return;
-    if (picked) l.setExpanded(picked.bx, picked.by, picked.slot);
-    else l.clearExpanded();
-  }, [picked, layout]);
+  /** 展开/收起:立即同步给引擎(失效受影响块的缓存),再更新 React 状态触发重渲染 */
+  const applyPicked = useCallback(
+    (p: { bx: number; by: number; slot: number } | null) => {
+      if (p) layout.setExpanded(p.bx, p.by, p.slot);
+      else layout.clearExpanded();
+      setPicked(p);
+    },
+    [layout],
+  );
 
   /** 平滑居中世界点 */
   const glideTo = useCallback(
@@ -113,7 +111,7 @@ export default function InfiniteView() {
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (useStore.getState().lightboxId) return;
       if (e.key === "Escape") {
-        if (picked) setPicked(null);
+        if (picked) applyPicked(null);
         else setView("masonry");
       }
     };
@@ -185,10 +183,10 @@ export default function InfiniteView() {
     lastClick.current = { key, t: Date.now() };
     // 展开该卡:平滑把块中心带到视口中心
     if (picked?.bx === bx && picked?.by === by && picked?.slot === slot) {
-      setPicked(null);
+      applyPicked(null);
       return;
     }
-    setPicked({ bx, by, slot });
+    applyPicked({ bx, by, slot });
     const t = tiles.find((tt) => tt.blockX === bx && tt.blockY === by && tt.slot === slot);
     if (t) glideTo(t.x + t.w / 2, t.y + t.h / 2);
   };
