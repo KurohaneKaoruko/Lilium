@@ -368,7 +368,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
             </div>
           )}
 
-          {/* 评分+颜色+标签:窄栏合成一列常用钮 */}
+          {/* 评分+标签:窄栏常用钮(颜色过滤只在展开态提供) */}
           {collapsed && (
             <div className="flex flex-col items-start gap-0.5 pt-2 mt-2 border-t border-border">
               <RailBtn
@@ -385,23 +385,6 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
                   )}
                 </span>
               </RailBtn>
-              <div className="flex flex-col gap-0.5">
-                {PRESET_COLORS.slice(0, 8).map((c) => (
-                  <button
-                    key={c}
-                    title={`颜色 ${c}`}
-                    className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors ${
-                      filters.color === c ? "bg-white/15" : "hover:bg-white/10"
-                    }`}
-                    onClick={() => setFilters({ color: filters.color === c ? null : c, colorTolerance: 60 })}
-                  >
-                    <span
-                      className={`w-3.5 h-3.5 rounded-full border ${filters.color === c ? "border-white ring-1 ring-white/60" : "border-black/30"}`}
-                      style={{ backgroundColor: c }}
-                    />
-                  </button>
-                ))}
-              </div>
               <RailBtn title={`标签 (${tags.length})`} active={!!filters.tag} onClick={() => setChromeLeft(true)}>
                 <Tags size={15} />
               </RailBtn>
