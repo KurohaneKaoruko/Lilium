@@ -457,9 +457,8 @@ export default function InfiniteView() {
                 onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
               >
                 <div
-                  className="absolute inset-0 overflow-hidden pointer-events-auto"
+                  className={`absolute inset-0 overflow-hidden pointer-events-auto tile-wrap ${isPicked ? "!cursor-default" : ""}`}
                   style={{
-                    cursor: "pointer",
                     transition: picked
                       ? `filter ${settle}ms ${easeCss}, box-shadow ${settle}ms ${easeCss}, border-radius ${settle}ms ${easeCss}`
                       : "none",

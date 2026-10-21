@@ -42,13 +42,13 @@ body {
 
 .no-select { user-select: none; -webkit-user-select: none; }
 
-/* 无限视图瓦片:悬停微微放大 + 指针光标(容器是抓手,瓦片上盖一层指针) */
-.tile-img {
+/* 无限视图瓦片:悬停微微放大(挂父层:img 是 pointer-events-none,自身 :hover 不触发) */
+.tile-wrap { cursor: pointer; }
+.tile-wrap .tile-img {
   transition: transform 160ms cubic-bezier(.22, 1, .36, 1);
   will-change: transform;
 }
-@keyframes tileHover { from { transform: scale(1) } to { transform: scale(1.035) } }
-.tile-img:hover { animation: tileHover 160ms cubic-bezier(.22, 1, .36, 1) forwards; }
+.tile-wrap:hover .tile-img { transform: scale(1.035); }
 
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
 .fade-in { animation: fadeIn .15s ease-out; }
