@@ -400,7 +400,10 @@ function Section({ title, action, children }: { title: string; action?: React.Re
   return (
     <div className="border-b border-border py-2">
       <div className="flex items-center justify-between px-3 mb-1">
-        <button className="text-[10px] font-medium tracking-wider text-neutral-500 uppercase hover:text-neutral-300" onClick={() => setCollapsed(!collapsed)}>
+        <button
+          className="flex-1 flex items-center h-6 text-[10px] font-medium tracking-wider text-neutral-500 uppercase hover:text-neutral-300"
+          onClick={() => setCollapsed(!collapsed)}
+        >
           {title}
         </button>
         {action}

@@ -94,7 +94,7 @@ export const useStore = create<State>((set, get) => ({
 
   filters: { ...defaultFilters },
   view: "infinite",
-  chromeLeft: true,
+  chromeLeft: false,
   chromeHovering: false,
   zoom: 240,
   sort: "addedAt",
