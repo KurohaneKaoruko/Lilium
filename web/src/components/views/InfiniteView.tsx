@@ -275,7 +275,7 @@ export default function InfiniteView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, size, picked, renderTick]);
 
-  // 键盘:Esc → 先藏面板(顶→左),再收起展开卡,最后退出视图
+  // 键盘:Esc → 先收左栏,再收起展开卡,最后退出视图(顶栏固定,不参与)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -283,10 +283,6 @@ export default function InfiniteView() {
       if (useStore.getState().lightboxId) return;
       if (e.key === "Escape") {
         const st = useStore.getState();
-        if (st.chromeTop) {
-          st.setChromeTop(false);
-          return;
-        }
         if (st.chromeLeft) {
           st.setChromeLeft(false);
           return;
@@ -299,12 +295,10 @@ export default function InfiniteView() {
     return () => window.removeEventListener("keydown", h);
   }, [applyPicked, setView]);
 
-  /** 墙面交互(拖拽/滚轮)→ 收起悬浮管理界面 */
+  /** 墙面交互(拖拽/滚轮)→ 收回左栏 */
   const wallInteract = useCallback(() => {
     const st = useStore.getState();
-    if (st.chromeHovering) return;
-    if (st.chromeTop) st.setChromeTop(false);
-    if (st.chromeLeft) st.setChromeLeft(false);
+    if (!st.chromeHovering && st.chromeLeft) st.setChromeLeft(false);
   }, []);
 
   const onPointerDown = (e: React.PointerEvent) => {

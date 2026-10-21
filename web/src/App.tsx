@@ -101,64 +101,29 @@ export default function App() {
   }, [toast]);
 
   const fullscreen = view === "infinite";
-  const chromeTop = useStore((s) => s.chromeTop);
   const chromeLeft = useStore((s) => s.chromeLeft);
-  const setChromeTop = useStore((s) => s.setChromeTop);
   const setChromeLeft = useStore((s) => s.setChromeLeft);
 
-  // 沉浸视图:顶/左两块面板独立呼出收起。
-  // - 指针进顶边缘热区(且不在左侧栏) → 只落顶栏;离热区且没悬停在任何面板上 → 只收顶栏
-  // - 指针进左边缘热区 → 只展开左栏;左栏收起态由 MiniRail 自己的悬停接管
+  // 沉浸视图:顶栏固定常驻;左栏是唯一可收起的面板。
+  // - 指针进左边缘热区 → 展开左栏
+  // - 离开左栏面板(未悬停在任何面板上) → 收回图标轨
   useEffect(() => {
     if (!fullscreen) return;
     const EDGE = 6;
-    let overLeftPanel = false; // 指针是否在左侧面板上(顶边缘热区从 x=0 开始,要排除它)
     const onMove = (e: PointerEvent) => {
       const st = useStore.getState();
-      const inTopZone = e.clientY <= EDGE && e.clientX > 12;
-      const inLeftZone = e.clientX <= EDGE;
-      if (inTopZone && !overLeftPanel && !st.chromeTop) setChromeTop(true);
-      if (inLeftZone && !st.chromeLeft) setChromeLeft(true);
-      // 离开顶热区:若指针没悬停在面板上 → 收顶栏(左侧栏不受影响)
-      if (!inTopZone && st.chromeTop && !overLeftPanel && !st.chromeHovering) {
-        window.setTimeout(() => {
-          const s2 = useStore.getState();
-          if (!s2.chromeHovering && s2.chromeTop) setChromeTop(false);
-        }, 260);
-      }
+      if (e.clientX <= EDGE && !st.chromeLeft) setChromeLeft(true);
     };
-    const onOverLeft = () => {
-      overLeftPanel = true;
-    };
-    const onLeaveLeft = () => {
-      overLeftPanel = false;
-    };
-    const leftEl = () => document.querySelector("[data-chrome-left]");
     window.addEventListener("pointermove", onMove);
-    const t = window.setInterval(() => {
-      const el = leftEl();
-      if (el) {
-        el.removeEventListener("pointerenter", onOverLeft);
-        el.addEventListener("pointerenter", onOverLeft);
-        el.removeEventListener("pointerleave", onLeaveLeft);
-        el.addEventListener("pointerleave", onLeaveLeft);
-      }
-    }, 500);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.clearInterval(t);
-    };
-  }, [fullscreen, setChromeTop, setChromeLeft]);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [fullscreen, setChromeLeft]);
 
-  // 点击墙面(拖拽/滚轮)→ 两块面板都收起
+  // 点击墙面(拖拽/滚轮)→ 左栏收回
   useEffect(() => {
     if (!fullscreen) return;
     const onWall = () => {
       const st = useStore.getState();
-      if (!st.chromeHovering) {
-        if (st.chromeTop) st.setChromeTop(false);
-        if (st.chromeLeft) st.setChromeLeft(false);
-      }
+      if (!st.chromeHovering && st.chromeLeft) st.setChromeLeft(false);
     };
     window.addEventListener("lilium:wall-interact", onWall);
     return () => window.removeEventListener("lilium:wall-interact", onWall);
@@ -225,15 +190,12 @@ function DetailPanelWrapper() {
 }
 
 /**
- * 沉浸视图的悬浮容器:顶栏(含窗口钮)与左栏各自独立——
- *   · 顶栏:顶边缘热区呼出,墙面交互/Esc 收起
- *   · 左栏:左边缘或图标轨悬停展开,指针离开收成图标轨
- * 悬停在任一面板上时 chromeHovering=true,双方都不自动收起。
+ * 沉浸视图的悬浮容器:顶栏(含窗口钮)固定常驻;左栏是唯一可收起面板——
+ * 收起 = 48px 图标轨,悬停原地张开成 224px 完整侧栏。
+ * 过渡:宽度 + 内层反向位移(内容像"从轨后滑出"),叠加交叉淡化,无跳变。
  */
 function FloatingChrome({ children }: { children: (mode: "top" | "left") => React.ReactNode }) {
-  const chromeTop = useStore((s) => s.chromeTop);
   const chromeLeft = useStore((s) => s.chromeLeft);
-  const setChromeTop = useStore((s) => s.setChromeTop);
   const setChromeLeft = useStore((s) => s.setChromeLeft);
 
   const hold = () => useStore.setState({ chromeHovering: true });
@@ -241,22 +203,14 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
     useStore.setState({ chromeHovering: false });
     window.setTimeout(() => {
       const st = useStore.getState();
-      if (st.chromeHovering) return;
-      if (st.chromeTop) setChromeTop(false);
-      if (st.chromeLeft) setChromeLeft(false);
-    }, 260);
+      if (!st.chromeHovering && st.chromeLeft) setChromeLeft(false);
+    }, 320);
   };
 
   return (
     <>
-      {/* 顶部:窗口控制钮 + 主顶栏(整体隐藏) */}
-      <div
-        onPointerEnter={hold}
-        onPointerLeave={release}
-        className={`absolute top-0 inset-x-0 z-40 transition-transform duration-300 ease-out ${
-          chromeTop ? "translate-y-0" : "-translate-y-full"
-        }`}
-      >
+      {/* 顶部:窗口控制钮 + 主顶栏(固定,不隐藏) */}
+      <div className="absolute top-0 inset-x-0 z-40">
         <div className="flex items-stretch h-11 bg-panel/85 backdrop-blur-md border-b border-border/60 shadow-lg">
           <div className="flex-1 min-w-0">{children("top")}</div>
           <WindowControls />
@@ -273,17 +227,20 @@ function FloatingChrome({ children }: { children: (mode: "top" | "left") => Reac
         className="absolute left-0 top-0 bottom-0 z-30 overflow-hidden"
         style={{
           width: chromeLeft ? 224 : 48,
-          transition: "width 280ms cubic-bezier(.22,1,.36,1)",
+          transition: "width 340ms cubic-bezier(.22,1,.36,1)",
           boxShadow: "8px 0 24px rgba(0,0,0,.25)",
         }}
       >
-        {/* 完整侧栏:始终挂载,张开后显现(收起时被容器裁掉、不可点) */}
+        {/* 完整侧栏:固定 224px 宽,收起时向左滑 176px(224-48)藏进裁剪区,叠交叉淡化 */}
         <div
           className="absolute inset-y-0 left-0 w-56 bg-panel/85 backdrop-blur-md border-r border-border/60"
           style={{
+            transform: chromeLeft ? "translateX(0)" : "translateX(-176px)",
             opacity: chromeLeft ? 1 : 0,
             pointerEvents: chromeLeft ? "auto" : "none",
-            transition: chromeLeft ? "opacity 220ms ease 70ms" : "opacity 120ms ease",
+            transition: chromeLeft
+              ? "transform 340ms cubic-bezier(.22,1,.36,1), opacity 240ms ease 60ms"
+              : "transform 340ms cubic-bezier(.22,1,.36,1), opacity 160ms ease",
           }}
           aria-hidden={!chromeLeft}
         >
