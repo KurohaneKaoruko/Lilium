@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ChevronRight, Folder as FolderIcon, FolderOpen, FolderPlus, Image, Star, Trash2,
   Tags, Palette, X, Bookmark, Pencil, Inbox, Film, Music, FileText, Type as TypeIcon, RefreshCw,
@@ -143,6 +143,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
 
   const [tagFilter, setTagFilter] = useState("");
   const [libPanel, setLibPanel] = useState(false);
+  const libBtnRef = useRef<HTMLButtonElement>(null);
   const tree = useMemo(() => buildTree(folders), [folders]);
 
   const toggleKind = (k: string) => {
@@ -210,9 +211,10 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         boxShadow: immersive ? "8px 0 24px rgba(0,0,0,.25)" : undefined,
       }}
     >
-      {/* 库卡片(沉浸态也在顶栏下方显示,点击弹出库面板) */}
+      {/* 库卡片(点击弹出库面板;面板 portal 到 body,不受侧栏裁剪) */}
       <div className={`relative border-b border-border ${collapsed ? "px-1.5 py-2 flex justify-center" : "px-3 py-3"}`}>
         <button
+          ref={libBtnRef}
           className={`flex items-center gap-2 w-full rounded-lg hover:bg-white/5 transition-colors ${collapsed ? "justify-center p-1" : "px-1 py-1"}`}
           title="资源库"
           onClick={(e) => {
@@ -233,7 +235,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
             </div>
           )}
         </button>
-        {libPanel && <LibraryPanel onClose={() => setLibPanel(false)} />}
+        {libPanel && <LibraryPanel anchorRef={libBtnRef} onClose={() => setLibPanel(false)} />}
       </div>
 
       {/* 固定 224px 内层列:宽度过渡期间内容零重排,aside 只做裁剪 */}

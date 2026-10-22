@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
-  Check, FolderInput, FolderPlus, Library as LibraryIcon, RefreshCcw,
-  Trash2, X, AlertTriangle,
+  AlertTriangle, Check, FolderInput, FolderPlus, Library as LibraryIcon,
+  RefreshCcw, Trash2, X,
 } from "lucide-react";
-import { api, type LibraryInfo } from "../api/client";
+import { api } from "../api/client";
 import { useStore } from "../store/useStore";
+import humanSize from "../lib/human";
 
 interface LibEntry {
   path: string;
@@ -16,34 +18,59 @@ interface LibEntry {
 }
 
 /**
- * 资源库面板:侧栏库卡片点击弹出。
- * 库列表 / 打开其它 / 创建资源库 / 清除缓存并重新加载 / 移除记录
- * 切换 = POST /libraries/switch → 全量刷新前端状态
+ * 资源库面板:侧栏库卡片点击弹出(portal 到 body,免被侧栏 overflow 裁剪)。
+ * 当前库信息卡 / 最近库列表 / 创建 / 打开其它 / 清除缓存重载
  */
-export default function LibraryPanel({ onClose }: { onClose: () => void }) {
+export default function LibraryPanel({
+  anchorRef,
+  onClose,
+}: {
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+}) {
   const info = useStore((s) => s.info);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const [libs, setLibs] = useState<LibEntry[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  // 定位:锚定按钮正下方,右边缘防溢出;paint 前算好避免闪跳
+  useLayoutEffect(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - 308)),
+      top: Math.min(r.bottom + 8, window.innerHeight - 80),
+    });
+  }, [anchorRef]);
 
   const reload = () => {
-    api<{ current: LibraryInfo; libraries: LibEntry[] }>("/libraries")
+    api<{ libraries: LibEntry[] }>("/libraries")
       .then((d) => setLibs(d.libraries))
       .catch(() => {});
   };
-  useEffect(reload, []);
+  useEffect(() => {
+    reload();
+  }, []);
 
-  // 点外面关闭
+  // 点外面 / 按 Esc 关闭
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const t = e.target as Node;
+      if (rootRef.current && !rootRef.current.contains(t) && !anchorRef.current?.contains(t)) onClose();
     };
+    const k = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("mousedown", h);
-    return () => window.removeEventListener("mousedown", h);
-  }, [onClose]);
+    window.addEventListener("keydown", k);
+    return () => {
+      window.removeEventListener("mousedown", h);
+      window.removeEventListener("keydown", k);
+    };
+  }, [onClose, anchorRef]);
 
   // 切换后全量重置前端状态
   const resetAfterSwitch = async () => {
@@ -73,7 +100,6 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
   };
 
   const createLib = async () => {
-    // 默认放在当前库同级目录
     const fallbackParent = info?.path ? info.path.replace(/[/\\][^/\\]+$/, "") : "";
     const parent = prompt("新库存放位置（父文件夹路径）:", fallbackParent);
     if (!parent?.trim()) return;
@@ -110,73 +136,111 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
     reload();
   };
 
-  return (
+  const current = libs.find((l) => l.current);
+  const others = libs.filter((l) => !l.current);
+
+  return createPortal(
     <div
-      ref={ref}
-      className="absolute left-2 top-full mt-1.5 w-72 bg-panel2/98 backdrop-blur-lg border border-border rounded-xl shadow-2xl z-50 pop-in overflow-hidden"
+      ref={rootRef}
+      className="fixed z-[70] w-[300px] rounded-2xl bg-[#252932]/[.97] backdrop-blur-xl border border-white/10 shadow-[0_18px_56px_rgba(0,0,0,.55)] overflow-hidden pop-in"
+      style={{ left: pos?.left ?? -9999, top: pos?.top ?? -9999, visibility: pos ? "visible" : "hidden" }}
     >
-      {/* 库列表 */}
-      <div className="max-h-64 overflow-y-auto py-1.5">
-        {libs.length === 0 && (
-          <div className="px-3 py-3 text-[11px] text-neutral-500">暂无其它资源库记录</div>
-        )}
-        {libs.map((lib) => (
-          <div
-            key={lib.path}
-            className={`group flex items-center gap-2.5 px-3 py-2 cursor-pointer text-xs ${
-              lib.current ? "bg-violet-500/10" : "hover:bg-white/5"
-            } ${lib.exists ? "" : "opacity-50"}`}
-            onClick={() => !lib.current && lib.exists && switchTo(lib.path)}
-            title={lib.path}
-          >
-            <LibraryIcon size={16} className={lib.current ? "text-violet-400 shrink-0" : "text-neutral-500 shrink-0"} />
+      {/* 标题行 */}
+      <div className="flex items-center justify-between pl-4 pr-2.5 pt-2.5 pb-1.5">
+        <span className="text-[11px] font-semibold text-neutral-400 tracking-widest">资源库</span>
+        <button className="p-1 rounded-md text-neutral-500 hover:text-white hover:bg-white/10 transition-colors" onClick={onClose}>
+          <X size={13} />
+        </button>
+      </div>
+
+      <div className="px-2 pb-1">
+        {/* 当前库信息卡 */}
+        {current && (
+          <div className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl bg-violet-500/[.13] border border-violet-400/20 mb-1">
+            <div className="w-8.5 h-8.5 w-9 h-9 rounded-lg bg-violet-500/25 flex items-center justify-center shrink-0">
+              <LibraryIcon size={15} className="text-violet-200" />
+            </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
-                <span className="truncate font-medium text-neutral-200">{lib.name}</span>
-                {!lib.exists && (
-                  <span title="路径不存在" className="shrink-0 text-amber-500"><AlertTriangle size={11} /></span>
+                <span className="text-xs font-semibold text-neutral-100 truncate">{current.name}</span>
+                <span className="text-[9px] leading-none px-1.5 py-[3px] rounded-full bg-violet-400/25 text-violet-200 shrink-0">当前</span>
+              </div>
+              <div className="text-[10px] text-neutral-400 truncate mt-0.5">
+                {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : current.path}
+              </div>
+            </div>
+            <Check size={15} className="text-violet-300 shrink-0" />
+          </div>
+        )}
+
+        {/* 其它库列表 */}
+        <div className={`space-y-0.5 max-h-56 overflow-y-auto ${busy && busy !== "__cache" && busy !== "__create" ? "opacity-60 pointer-events-none" : ""}`}>
+          {others.map((lib) => (
+            <div
+              key={lib.path}
+              className={`group flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl cursor-pointer transition-colors ${
+                lib.exists ? "hover:bg-white/[.055]" : "opacity-45 hover:bg-white/[.03]"
+              }`}
+              onClick={() => lib.exists && switchTo(lib.path)}
+              title={lib.path}
+            >
+              <div className="w-8 h-8 rounded-lg bg-white/[.06] flex items-center justify-center shrink-0 group-hover:bg-white/[.09] transition-colors">
+                {lib.kind === "eagle" ? (
+                  <span className="text-[10px] font-bold text-amber-400">E</span>
+                ) : (
+                  <LibraryIcon size={13} className="text-neutral-400" />
                 )}
               </div>
-              <div className="text-[10px] text-neutral-500 truncate">{lib.path}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-medium text-neutral-300 group-hover:text-neutral-100 truncate transition-colors">{lib.name}</span>
+                  {lib.kind === "eagle" && (
+                    <span className="text-[9px] leading-none px-1 py-[2px] rounded bg-amber-500/15 text-amber-400 shrink-0">Eagle</span>
+                  )}
+                  {!lib.exists && (
+                    <span className="text-amber-500 shrink-0" title="路径不存在">
+                      <AlertTriangle size={10} />
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-neutral-500 truncate mt-px">{lib.path}</div>
+              </div>
+              {busy === lib.path ? (
+                <RefreshCcw size={13} className="text-violet-300 animate-spin shrink-0" />
+              ) : (
+                <button
+                  className="hidden group-hover:block p-1 rounded-md hover:bg-white/10 text-neutral-500 hover:text-white shrink-0 transition-colors"
+                  title="从列表移除"
+                  onClick={(e) => removeEntry(e, lib)}
+                >
+                  <Trash2 size={11} />
+                </button>
+              )}
             </div>
-            {lib.current ? (
-              <Check size={14} className="text-violet-400 shrink-0" />
-            ) : (
-              <button
-                className="hidden group-hover:block p-1 hover:bg-white/10 rounded text-neutral-500 hover:text-white shrink-0"
-                title="从列表移除"
-                onClick={(e) => removeEntry(e, lib)}
-              >
-                <Trash2 size={12} />
-              </button>
-            )}
-          </div>
-        ))}
+          ))}
+
+          {/* 空状态 */}
+          {others.length === 0 && (
+            <div className="mx-0.5 mb-0.5 rounded-xl border border-dashed border-white/[.09] px-3 py-3.5 text-center">
+              <FolderInput size={16} className="mx-auto text-neutral-600 mb-1.5" />
+              <div className="text-[11px] text-neutral-500">暂无其它资源库</div>
+              <div className="text-[10px] text-neutral-600 mt-0.5">打开或创建后,可在此快速切换</div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* 操作区 */}
-      <div className="border-t border-border py-1.5">
-        <PanelBtn icon={<FolderPlus size={14} />} label="创建资源库…" onClick={() => setCreating(true)} />
-        <PanelBtn icon={<FolderInput size={14} />} label="打开其它资源库…" onClick={openOther} />
-        <PanelBtn
-          icon={busy === "__cache" ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
-          label="清除缓存并重新加载"
-          onClick={clearCache}
-          disabled={busy !== null}
-        />
-      </div>
-
-      {/* 创建子表单 */}
-      {creating && (
-        <div className="border-t border-border px-3 py-2.5 space-y-2 bg-black/20">
+      {/* 操作区 / 创建表单 */}
+      {creating ? (
+        <div className="border-t border-white/[.07] p-2.5 space-y-2 bg-black/25">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-neutral-400">新资源库名称</span>
-            <button className="text-neutral-500 hover:text-white" onClick={() => setCreating(false)}><X size={12} /></button>
+            <span className="text-[11px] font-medium text-neutral-300">创建资源库</span>
+            <button className="p-0.5 text-neutral-500 hover:text-white" onClick={() => setCreating(false)}><X size={12} /></button>
           </div>
           <input
             autoFocus
-            className="input w-full"
-            placeholder="例如：二次元图库"
+            className="input w-full !py-1.5 text-xs"
+            placeholder="资源库名称,例如:二次元图库"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             onKeyDown={(e) => {
@@ -185,26 +249,54 @@ export default function LibraryPanel({ onClose }: { onClose: () => void }) {
             }}
           />
           <div className="text-[10px] text-neutral-500">
-            将在当前库同级目录创建 <span className="text-neutral-400">{newName.trim() || "库名"}.lilium</span>
+            将在当前库同级目录创建 <span className="text-neutral-300 font-mono">{newName.trim() || "库名"}.lilium</span>
           </div>
-          <button className="btn-primary w-full justify-center" disabled={!newName.trim() || busy !== null} onClick={createLib}>
-            {busy === "__create" ? "创建中…" : "创建并切换"}
-          </button>
+          <div className="flex gap-1.5">
+            <button className="btn flex-1 justify-center !py-1.5" onClick={() => setCreating(false)}>取消</button>
+            <button className="btn-primary flex-1 justify-center !py-1.5" disabled={!newName.trim() || busy !== null} onClick={createLib}>
+              {busy === "__create" ? "创建中…" : "创建并切换"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="border-t border-white/[.07] p-1.5 space-y-0.5">
+          <Act
+            icon={<FolderPlus size={13} />}
+            label="创建资源库…"
+            onClick={() => setCreating(true)}
+            disabled={busy !== null}
+          />
+          <Act
+            icon={<FolderInput size={13} />}
+            label="打开其它资源库…"
+            onClick={openOther}
+            disabled={busy !== null}
+          />
+          <Act
+            icon={<RefreshCcw size={13} className={busy === "__cache" ? "animate-spin" : ""} />}
+            label={busy === "__cache" ? "清除中…" : "清除缓存并重新加载"}
+            onClick={clearCache}
+            disabled={busy !== null}
+          />
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
-function PanelBtn({ icon, label, onClick, disabled }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
+/** 操作行:图标小方块 + 文字 */
+function Act({ icon, label, onClick, disabled }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
   return (
     <button
-      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-neutral-300 hover:bg-white/5 hover:text-white disabled:opacity-40 disabled:pointer-events-none"
+      className="group w-full flex items-center gap-2.5 px-2 py-1.5 rounded-xl text-left transition-colors hover:bg-white/[.055] disabled:opacity-40 disabled:pointer-events-none"
       onClick={onClick}
       disabled={disabled}
     >
-      <span className="text-neutral-500">{icon}</span>
-      {label}
+      <span className="w-7 h-7 rounded-lg bg-white/[.06] group-hover:bg-white/[.1] flex items-center justify-center text-neutral-400 group-hover:text-neutral-100 transition-colors shrink-0">
+        {icon}
+      </span>
+      <span className="text-xs text-neutral-300 group-hover:text-white transition-colors">{label}</span>
     </button>
   );
 }
