@@ -10,6 +10,7 @@ import MasonryView from "./components/views/MasonryView";
 import ListView from "./components/views/ListView";
 import InfiniteView from "./components/views/InfiniteView";
 import { DuplicatesModal, BatchRenameModal, SelectionBar, SettingsModal, ShortcutsModal } from "./components/modals/Modals";
+import StatsModal from "./components/modals/StatsModal";
 import DropOverlay from "./components/DropOverlay";
 import CollectionsView from "./components/views/CollectionsView";
 import WindowControls from "./components/WindowControls";
@@ -22,9 +23,16 @@ export default function App() {
   const refreshMeta = useStore((s) => s.refreshMeta);
   const similarIds = useStore((s) => s.similarIds);
   const exitSimilar = useStore((s) => s.exitSimilar);
-  const [modal, setModal] = useState<"shortcuts" | "duplicates" | "settings" | null>(null);
+  const [modal, setModal] = useState<"shortcuts" | "duplicates" | "settings" | "stats" | null>(null);
   const [renameIds, setRenameIds] = useState<string[] | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // 模态事件总线:任意组件 dispatch "lilium:modal" detail="stats"|"settings"|... 即可打开
+  useEffect(() => {
+    const h = (e: Event) => setModal((e as CustomEvent).detail);
+    window.addEventListener("lilium:modal", h);
+    return () => window.removeEventListener("lilium:modal", h);
+  }, []);
 
   useEffect(() => {
     refreshMeta();
@@ -178,6 +186,7 @@ export default function App() {
       {modal === "shortcuts" && <ShortcutsModal onClose={() => setModal(null)} />}
       {modal === "duplicates" && <DuplicatesModal onClose={() => setModal(null)} />}
       {modal === "settings" && <SettingsModal onClose={() => setModal(null)} />}
+      {modal === "stats" && <StatsModal onClose={() => setModal(null)} />}
       {renameIds && <BatchRenameModal ids={renameIds} onClose={() => setRenameIds(null)} />}
 
       {toast && (

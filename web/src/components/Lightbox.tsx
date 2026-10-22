@@ -1,11 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut, Info } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut, Info, Tag as TagIcon } from "lucide-react";
 import { useStore } from "../store/useStore";
-import { fileUrl } from "../api/client";
+import { fileUrl, api, type Exif } from "../api/client";
 import { Stars } from "./views/shared";
-import { api } from "../api/client";
 
-/** 灯箱大图预览：缩放、平移、左右切换、快速评分 */
+/** EXIF 中文标签 */
+const EXIF_LABELS: Record<string, string> = {
+  make: "相机厂商", model: "相机型号", lens: "镜头", iso: "ISO",
+  fnumber: "光圈", exposure: "快门", focal: "焦距", date: "拍摄时间",
+};
+
+/** 灯箱大图预览：缩放、平移、左右切换、快速评分、EXIF、快速打标 */
 export default function Lightbox() {
   const lightboxId = useStore((s) => s.lightboxId);
   const setLightbox = useStore((s) => s.setLightbox);
@@ -14,6 +19,37 @@ export default function Lightbox() {
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const [showInfo, setShowInfo] = useState(false);
+  const [exif, setExif] = useState<Exif | null>(null);
+  const [tagInput, setTagInput] = useState("");
+  const refreshMeta = useStore((s) => s.refreshMeta);
+
+  // 切换图片 → 拉取 EXIF,重置视图
+  useEffect(() => {
+    setZoom(1);
+    setOffset({ x: 0, y: 0 });
+    setExif(null);
+    if (!lightboxId) return;
+    api<{ exif: Exif | null }>(`/items/${lightboxId}`)
+      .then((d) => setExif(d.exif))
+      .catch(() => setExif(null));
+  }, [lightboxId]);
+
+  const addTag = async (name: string) => {
+    const n = name.trim();
+    if (!n || !lightboxId) return;
+    await api(`/items/${lightboxId}/tags/${encodeURIComponent(n)}`, { method: "PUT" });
+    useStore.getState().patchItemLocal(lightboxId, { tags: [...(item?.tags ?? []), n] } as never);
+    setTagInput("");
+    refreshMeta();
+  };
+
+  const removeTag = async (t: string) => {
+    if (!lightboxId) return;
+    await api(`/items/${lightboxId}/tags/${encodeURIComponent(t)}`, { method: "DELETE" });
+    useStore.getState().patchItemLocal(lightboxId, { tags: (item?.tags ?? []).filter((x) => x !== t) } as never);
+    refreshMeta();
+  };
 
   const idx = items.findIndex((i) => i.id === lightboxId);
   const item = idx >= 0 ? items[idx] : null;
@@ -33,6 +69,9 @@ export default function Lightbox() {
   useEffect(() => {
     if (!lightboxId) return;
     const h = (e: KeyboardEvent) => {
+      // 输入框聚焦时不拦截按键
+      const t = e.target as HTMLElement;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
       if (e.key === "Escape") setLightbox(null);
       else if (e.key === "ArrowLeft") go(-1);
       else if (e.key === "ArrowRight") go(1);
@@ -69,7 +108,8 @@ export default function Lightbox() {
             }}
             size={16}
           />
-          <button className="btn" onClick={() => useStore.getState().setDetail(item.id)}><Info size={14} /> 详情</button>
+          <button className="btn" onClick={() => setShowInfo((v) => !v)}><Info size={14} /> 信息</button>
+          <button className="btn" onClick={() => useStore.getState().setDetail(item.id)}>详情</button>
           <button className="btn" onClick={() => setZoom((z) => Math.min(8, z * 1.3))}><ZoomIn size={15} /></button>
           <button className="btn" onClick={() => setZoom((z) => Math.max(0.2, z / 1.3))}><ZoomOut size={15} /></button>
           <button className="btn" onClick={() => setLightbox(null)}><X size={16} /></button>
@@ -117,6 +157,66 @@ export default function Lightbox() {
         )}
       </div>
 
+      {/* 右侧信息抽屉 */}
+      {showInfo && (
+        <div
+          className="absolute right-0 top-11 bottom-0 w-72 bg-panel/95 backdrop-blur-md border-l border-border/60 overflow-y-auto p-4 space-y-4 slide-in-right z-10"
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-neutral-400 font-medium">图片信息</span>
+            <button className="text-neutral-500 hover:text-white" onClick={() => setShowInfo(false)}><X size={14} /></button>
+          </div>
+
+          {/* 快速打标 */}
+          <div>
+            <div className="text-[11px] text-neutral-500 flex items-center gap-1 mb-1.5"><TagIcon size={11} /> 标签</div>
+            <div className="flex flex-wrap gap-1 mb-1.5">
+              {item.tags.map((t) => (
+                <span key={t} className="inline-flex items-center gap-1 bg-violet-500/15 text-violet-200 text-[11px] px-1.5 py-0.5 rounded">
+                  {t}
+                  <button onClick={() => removeTag(t)} className="hover:text-white"><X size={10} /></button>
+                </span>
+              ))}
+              {item.tags.length === 0 && <span className="text-[11px] text-neutral-600">暂无标签</span>}
+            </div>
+            <input
+              className="input w-full"
+              placeholder="添加标签，回车确认"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); addTag(tagInput); }
+                e.stopPropagation();
+              }}
+            />
+          </div>
+
+          {/* 基本信息 */}
+          <div className="space-y-1.5 text-[11px]">
+            <Row k="文件名" v={item.name} />
+            <Row k="类型" v={`${item.kind} · ${item.ext.toUpperCase()}`} />
+            <Row k="尺寸" v={item.width ? `${item.width}×${item.height}` : "—"} />
+            <Row k="大小" v={fmtSize(item.size)} />
+            <Row k="添加时间" v={new Date(item.addedAt).toLocaleString()} />
+            {item.duration != null && <Row k="时长" v={`${Math.round(item.duration)}s`} />}
+            {item.url ? <Row k="来源" v={item.url} /> : null}
+          </div>
+
+          {/* EXIF */}
+          {exif && Object.keys(exif).length > 0 && (
+            <div>
+              <div className="text-[11px] text-neutral-500 mb-1.5">EXIF</div>
+              <div className="space-y-1.5 text-[11px]">
+                {Object.entries(exif).map(([k, v]) => (
+                  <Row key={k} k={EXIF_LABELS[k] ?? k} v={String(v)} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 左右切换 */}
       {idx > 0 && (
         <button className="absolute left-3 top-1/2 -translate-y-1/2 btn !p-2 bg-black/50 rounded-full" onClick={() => go(-1)}>
@@ -134,4 +234,18 @@ export default function Lightbox() {
   );
 }
 
-import { useRef } from "react";
+function Row({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="flex gap-2">
+      <span className="text-neutral-500 shrink-0 w-16">{k}</span>
+      <span className="text-neutral-300 break-all">{v}</span>
+    </div>
+  );
+}
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}

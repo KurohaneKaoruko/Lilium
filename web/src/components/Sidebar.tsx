@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import {
   ChevronRight, Folder as FolderIcon, FolderOpen, FolderPlus, Image, Star, Trash2,
-  Tags, Palette, X, Bookmark, Pencil, Inbox, Film, Music, FileText, Type as TypeIcon,
+  Tags, Palette, X, Bookmark, Pencil, Inbox, Film, Music, FileText, Type as TypeIcon, RefreshCw,
 } from "lucide-react";
 import { useStore, type Filters } from "../store/useStore";
-import { api, type Folder } from "../api/client";
+import { api, type Folder, type SmartFolder } from "../api/client";
 import humanSize from "../lib/human";
+import LibraryPanel from "./LibraryPanel";
 
 interface TreeNode extends Folder {
   children: TreeNode[];
@@ -141,6 +142,7 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
   const setChromeLeft = useStore((s) => s.setChromeLeft);
 
   const [tagFilter, setTagFilter] = useState("");
+  const [libPanel, setLibPanel] = useState(false);
   const tree = useMemo(() => buildTree(folders), [folders]);
 
   const toggleKind = (k: string) => {
@@ -153,6 +155,30 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
     if (!name?.trim()) return;
     const q: Partial<Filters> = { ...filters };
     await api("/smart-folders", { method: "POST", body: JSON.stringify({ name: name.trim(), query: q }) });
+    refreshMeta();
+  };
+
+  // 重命名智能文件夹(内联输入)
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameVal, setRenameVal] = useState("");
+  const commitRename = async () => {
+    if (!renamingId) return;
+    const name = renameVal.trim();
+    if (name) {
+      const sf = smartFolders.find((x) => x.id === renamingId);
+      if (sf) {
+        await api(`/smart-folders/${renamingId}`, { method: "PUT", body: JSON.stringify({ name, query: sf.query }) });
+        refreshMeta();
+      }
+    }
+    setRenamingId(null);
+  };
+
+  // 用当前筛选覆盖智能文件夹的查询条件
+  const updateSmart = async (e: React.MouseEvent, sf: SmartFolder) => {
+    e.stopPropagation();
+    const q: Partial<Filters> = { ...filters };
+    await api(`/smart-folders/${sf.id}`, { method: "PUT", body: JSON.stringify({ name: sf.name, query: q }) });
     refreshMeta();
   };
 
@@ -184,20 +210,31 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
         boxShadow: immersive ? "8px 0 24px rgba(0,0,0,.25)" : undefined,
       }}
     >
-      {/* 库信息(沉浸态不显示,避免顶栏遮挡) */}
-      {!immersive && (
-        <div className="px-3 py-3 border-b border-border">
-          <div className="flex items-center gap-2">
-            <span className="text-lg shrink-0">🌸</span>
-            <div className="min-w-0">
-              <div className="text-xs font-medium truncate">{info?.name ?? "Lilium"}</div>
+      {/* 库卡片(沉浸态也在顶栏下方显示,点击弹出库面板) */}
+      <div className={`relative border-b border-border ${collapsed ? "px-1.5 py-2 flex justify-center" : "px-3 py-3"}`}>
+        <button
+          className={`flex items-center gap-2 w-full rounded-lg hover:bg-white/5 transition-colors ${collapsed ? "justify-center p-1" : "px-1 py-1"}`}
+          title="资源库"
+          onClick={(e) => {
+            e.stopPropagation();
+            setLibPanel((v) => !v);
+          }}
+        >
+          <span className="text-lg shrink-0">🌸</span>
+          {!collapsed && (
+            <div className="min-w-0 text-left">
+              <div className="text-xs font-medium truncate flex items-center gap-1">
+                {info?.name ?? "Lilium"}
+                <ChevronRight size={10} className={`text-neutral-600 transition-transform ${libPanel ? "rotate-90" : ""}`} />
+              </div>
               <div className="text-[10px] text-neutral-500">
                 {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : ""}
               </div>
             </div>
-          </div>
-        </div>
-      )}
+          )}
+        </button>
+        {libPanel && <LibraryPanel onClose={() => setLibPanel(false)} />}
+      </div>
 
       {/* 固定 224px 内层列:宽度过渡期间内容零重排,aside 只做裁剪 */}
       <div className="w-56 shrink-0">
@@ -248,8 +285,28 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
                   }}
                 >
                   <Bookmark size={13} className="text-amber-400/80 shrink-0" />
-                  <span className="truncate flex-1">{sf.name}</span>
-                  <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" onClick={(e) => deleteSmart(e, sf.id)}><Trash2 size={11} /></button>
+                  {renamingId === sf.id ? (
+                    <input
+                      autoFocus
+                      className="input !px-1 !py-0.5 !text-xs w-full min-w-0"
+                      value={renameVal}
+                      onChange={(e) => setRenameVal(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename();
+                        else if (e.key === "Escape") setRenamingId(null);
+                        e.stopPropagation();
+                      }}
+                      onBlur={commitRename}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <>
+                      <span className="truncate flex-1">{sf.name}</span>
+                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" title="用当前筛选覆盖更新" onClick={(e) => updateSmart(e, sf)}><RefreshCw size={11} /></button>
+                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" title="重命名" onClick={(e) => { e.stopPropagation(); setRenamingId(sf.id); setRenameVal(sf.name); }}><Pencil size={11} /></button>
+                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" onClick={(e) => deleteSmart(e, sf.id)}><Trash2 size={11} /></button>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

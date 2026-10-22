@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, X,
-  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes,
+  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes, BarChart3,
 } from "lucide-react";
 import { useStore, type ViewMode } from "../store/useStore";
 import { api } from "../api/client";
@@ -150,6 +150,9 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
           导入
           <input type="file" multiple className="sr-only" onChange={(e) => doUpload(e.target.files)} />
         </label>
+        <button className="btn" title="库统计" onClick={() => window.dispatchEvent(new CustomEvent("lilium:modal", { detail: "stats" }))}>
+          <BarChart3 size={13} />
+        </button>
         <button className="btn" title="刷新" onClick={() => { refreshMeta(); useStore.getState().fetchItems(); }}>
           <RefreshCcw size={13} />
         </button>
