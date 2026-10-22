@@ -7,6 +7,18 @@ use crate::db::{self, meta_get, meta_set};
 use crate::model::{Folder, Item, SmartFolder, Tag};
 use crate::{eagle, import, jobs, query, thumbs};
 
+/// Eagle 库对应的伴生 .lilium 库路径（同级目录）
+pub fn eagle_companion_path(eagle_root: &Path) -> PathBuf {
+    let name = eagle_root
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Lilium".into());
+    eagle_root
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{name}.lilium"))
+}
+
 pub struct Library {
     pub root: PathBuf,
     pub conn: Connection,
@@ -38,6 +50,78 @@ impl Library {
         Ok(lib)
     }
 
+    /// 打开或创建（库切换面板主入口）：自动识别 Eagle 库 → 导入伴生库；
+    /// 原生库不存在时自动创建；成功后写入最近库注册表
+    pub fn open_or_create(path: &Path) -> Result<(Library, bool), anyhow::Error> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let (lib, eagle_imported) = if db::looks_like_eagle_library(&canonical) {
+            // Eagle 库 → 旁边找同名 .lilium 伴生库,无则导入生成
+            let companion = eagle_companion_path(&canonical);
+            if companion.join("library.db").is_file() {
+                (Library::open(&companion)?, false)
+            } else {
+                let (l, _report) = Library::open_eagle(&canonical)?;
+                (l, true)
+            }
+        } else if canonical.join("library.db").is_file() {
+            (Library::open(&canonical)?, false)
+        } else {
+            // 目录不存在库 → 创建 xxx.lilium（目录名带 .lilium 后缀时直接用）
+            let (parent, name) = if canonical
+                .extension()
+                .map(|e| e == "lilium")
+                .unwrap_or(false)
+            {
+                if canonical.exists() {
+                    std::fs::remove_dir_all(&canonical).ok();
+                }
+                (
+                    canonical.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                    canonical
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "Lilium".into()),
+                )
+            } else {
+                (canonical.clone(), canonical
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Lilium".into()))
+            };
+            (Library::create(&parent, &name)?, false)
+        };
+        let kind = if eagle_imported || db::looks_like_eagle_library(&canonical) { "eagle" } else { "lilium" };
+        let _ = crate::recent::touch(&lib.root, &lib.name(), kind);
+        Ok((lib, eagle_imported))
+    }
+
+    /// 清除缩略图缓存并重载库（库面板「清除缓存并重新加载」）
+    pub fn clear_cache(&mut self) -> Result<u64, anyhow::Error> {
+        let thumb_dir = self.root.join("thumbnails");
+        let mut removed: u64 = 0;
+        fn dir_size(p: &Path) -> u64 {
+            let mut n = 0;
+            if let Ok(rd) = std::fs::read_dir(p) {
+                for e in rd.flatten() {
+                    if e.path().is_dir() {
+                        n += dir_size(&e.path());
+                    } else if let Ok(m) = e.metadata() {
+                        n += m.len();
+                    }
+                }
+            }
+            n
+        }
+        if thumb_dir.exists() {
+            removed = dir_size(&thumb_dir);
+            std::fs::remove_dir_all(&thumb_dir)?;
+            std::fs::create_dir_all(&thumb_dir)?;
+        }
+        // 全部条目标记无缩略图,任务队列会重新生成
+        self.conn.execute("UPDATE items SET thumb=0", [])?;
+        Ok(removed)
+    }
+
     /// 打开 Eagle 库：在库目录旁边生成同名 `.lilium` 库，完整导入结构、标签、评分、注释等
     pub fn open_eagle(eagle_root: &Path) -> Result<(Library, eagle::EagleImportReport), anyhow::Error> {
         if !db::looks_like_eagle_library(eagle_root) {
@@ -63,8 +147,118 @@ impl Library {
         meta_get(&self.conn, "name").unwrap_or_else(|| "Lilium".into())
     }
 
-    pub fn info(&self) -> serde_json::Value {
-        let item_count: i64 = self
+    /// 库统计仪表盘数据:数量/大小分布、类型分布、评分分布、月度新增、标签 Top、颜色分布
+    pub fn stats(&self) -> serde_json::Value {
+        let one = |sql: &str| -> i64 { self.conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0) };
+
+        // 类型分布
+        let mut kind_stmt = self
+            .conn
+            .prepare("SELECT kind, COUNT(*), COALESCE(SUM(size),0) FROM items WHERE trash=0 GROUP BY kind ORDER BY 2 DESC")
+            .unwrap();
+        let kinds: Vec<serde_json::Value> = kind_stmt
+            .query_map([], |r| {
+                Ok(json!({ "kind": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)?, "size": r.get::<_, i64>(2)? }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        drop(kind_stmt);
+
+        // 评分分布 0-5
+        let mut rating_stmt = self.conn.prepare("SELECT rating, COUNT(*) FROM items WHERE trash=0 GROUP BY rating").unwrap();
+        let mut rating_map: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        for row in rating_stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap().filter_map(Result::ok) {
+            rating_map.insert(row.0, row.1);
+        }
+        drop(rating_stmt);
+        let ratings: Vec<serde_json::Value> = (0..=5)
+            .map(|star| json!({ "rating": star, "count": rating_map.get(&star).copied().unwrap_or(0) }))
+            .collect();
+
+        // 近 12 个月每月新增
+        let mut month_stmt = self
+            .conn
+            .prepare("SELECT strftime('%Y-%m', added_at/1000, 'unixepoch') m, COUNT(*) FROM items WHERE trash=0 AND added_at>0 GROUP BY m ORDER BY m DESC LIMIT 12")
+            .unwrap();
+        let mut months: Vec<serde_json::Value> = month_stmt
+            .query_map([], |r| Ok(json!({ "month": r.get::<_, String>(0)?, "count": r.get::<_, i64>(1)? })))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        drop(month_stmt);
+        months.reverse();
+
+        // 标签 Top 10
+        let mut tag_stmt = self
+            .conn
+            .prepare(
+                "SELECT t.name, t.color, COUNT(it.item_id) n FROM tags t
+                 JOIN item_tags it ON it.tag_id = t.name
+                 JOIN items i ON i.id = it.item_id AND i.trash=0
+                 GROUP BY t.name ORDER BY n DESC LIMIT 10",
+            )
+            .unwrap();
+        let top_tags: Vec<serde_json::Value> = tag_stmt
+            .query_map([], |r| {
+                Ok(json!({ "name": r.get::<_, String>(0)?, "color": r.get::<_, String>(1)?, "count": r.get::<_, i64>(2)? }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        drop(tag_stmt);
+
+        // 颜色分布(主色量化到 8 色系:红/橙/黄/绿/青/蓝/紫/灰)
+        let mut color_stmt = self
+            .conn
+            .prepare("SELECT r, g, b, COUNT(*) FROM items WHERE trash=0 AND r IS NOT NULL GROUP BY r/64, g/64, b/64 ORDER BY 4 DESC LIMIT 8")
+            .unwrap();
+        let colors: Vec<serde_json::Value> = color_stmt
+            .query_map([], |r| {
+                let rr: i64 = r.get(0)?;
+                let gg: i64 = r.get(1)?;
+                let bb: i64 = r.get(2)?;
+                let n: i64 = r.get(3)?;
+                Ok(json!({ "r": rr, "g": gg, "b": bb, "count": n }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        drop(color_stmt);
+
+        // 最大单文件 Top 5
+        let mut big_stmt = self
+            .conn
+            .prepare("SELECT id, name, size FROM items WHERE trash=0 ORDER BY size DESC LIMIT 5")
+            .unwrap();
+        let largest: Vec<serde_json::Value> = big_stmt
+            .query_map([], |r| {
+                Ok(json!({ "id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "size": r.get::<_, i64>(2)? }))
+            })
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        drop(big_stmt);
+
+        json!({
+            "itemCount": one("SELECT COUNT(*) FROM items WHERE trash=0"),
+            "totalSize": one("SELECT COALESCE(SUM(size),0) FROM items WHERE trash=0"),
+            "trashCount": one("SELECT COUNT(*) FROM items WHERE trash=1"),
+            "tagCount": one("SELECT COUNT(*) FROM tags"),
+            "folderCount": one("SELECT COUNT(*) FROM folders"),
+            "smartFolderCount": one("SELECT COUNT(*) FROM smart_folders"),
+            "withRating": one("SELECT COUNT(*) FROM items WHERE trash=0 AND rating>0"),
+            "withTags": one("SELECT COUNT(*) FROM items WHERE trash=0 AND EXISTS(SELECT 1 FROM item_tags WHERE item_id=items.id)"),
+            "kinds": kinds,
+            "ratings": ratings,
+            "months": months,
+            "topTags": top_tags,
+            "colors": colors,
+            "largest": largest,
+        })
+    }
+
+    pub fn info(&self) -> serde_json::Value {        let item_count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM items WHERE trash=0", [], |r| r.get(0))
             .unwrap_or(0);

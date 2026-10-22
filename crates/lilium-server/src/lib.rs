@@ -13,6 +13,17 @@ pub struct ServerState {
     pub version: &'static str,
 }
 
+impl ServerState {
+    /// 运行时切换库：换出 Mutex 内的 Library,观察扫描/任务队列无需重启
+    pub fn switch_library(&self, path: &std::path::Path) -> Result<(String, bool), anyhow::Error> {
+        let (newlib, eagle_imported) = Library::open_or_create(path)?;
+        let name = newlib.name();
+        let mut guard = self.lib.lock().map_err(|_| anyhow::anyhow!("库锁已损坏"))?;
+        *guard = newlib;
+        Ok((name, eagle_imported))
+    }
+}
+
 pub struct ServerConfig {
     pub port: u16,
     pub library: Option<PathBuf>,

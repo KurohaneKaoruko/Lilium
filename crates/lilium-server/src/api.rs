@@ -16,6 +16,12 @@ use crate::ServerState;
 pub fn router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/api/info", get(info))
+        .route("/api/stats", get(stats))
+        .route("/api/libraries", get(libraries).post(open_library))
+        .route("/api/libraries/create", post(create_library))
+        .route("/api/libraries/switch", post(switch_library))
+        .route("/api/libraries/remove", post(remove_library))
+        .route("/api/libraries/clear-cache", post(clear_cache))
         .route("/api/folders", get(folders).post(create_folder))
         .route("/api/folders/{id}", patch(update_folder).delete(delete_folder))
         .route("/api/tags", get(tags).post(create_tag))
@@ -50,6 +56,106 @@ pub fn router(state: Arc<ServerState>) -> Router {
 async fn info(State(state): State<ArcState>) -> Result<Response, ApiError> {
     let v = with_lib_blocking(&state, |lib| Ok(lib.info())).await?;
     Ok(ok_json(v))
+}
+
+async fn stats(State(state): State<ArcState>) -> Result<Response, ApiError> {
+    let v = with_lib_blocking(&state, |lib| Ok(lib.stats())).await?;
+    Ok(ok_json(v))
+}
+
+// ---------- 资源库管理 ----------
+
+/// 最近库列表(含当前库标记与有效性检查)
+async fn libraries(State(state): State<ArcState>) -> Result<Response, ApiError> {
+    let current = with_lib_blocking(&state, |lib| Ok(json!({ "path": lib.root.to_string_lossy(), "name": lib.name() }))).await?;
+    let current_path = current.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let list: Vec<serde_json::Value> = lilium_core::recent::list()
+        .into_iter()
+        .map(|e| {
+            json!({
+                "path": e.path,
+                "name": e.name,
+                "lastOpened": e.lastOpened,
+                "kind": e.kind,
+                "exists": std::path::Path::new(&e.path).exists(),
+                "current": e.path == current_path,
+            })
+        })
+        .collect();
+    Ok(ok_json(json!({ "current": current, "libraries": list })))
+}
+
+#[derive(Deserialize)]
+struct LibraryPathReq {
+    path: String,
+}
+
+/// 打开/切换库(Eagle 库自动识别导入)
+async fn open_library(State(state): State<ArcState>, Json(req): Json<LibraryPathReq>) -> Result<Response, ApiError> {
+    let p = std::path::PathBuf::from(req.path);
+    if !p.exists() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("路径不存在: {}", p.display())));
+    }
+    // 打开/导入可能耗时(Eagle 首次导入),放阻塞线程
+    let state2 = state.clone();
+    let res = tokio::task::spawn_blocking(move || state2.switch_library(&p))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (name, eagle_imported) = res;
+    Ok(ok_json(json!({ "ok": true, "name": name, "eagleImported": eagle_imported })))
+}
+
+/// 新建资源库
+async fn create_library(State(state): State<ArcState>, Json(req): Json<CreateLibraryReq>) -> Result<Response, ApiError> {
+    let parent = std::path::PathBuf::from(&req.parent);
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "库名不能为空".into()));
+    }
+    if !parent.is_dir() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, format!("父目录不存在: {}", parent.display())));
+    }
+    let lib = lilium_core::Library::create(&parent, &name)
+        .map_err(|e| ApiError(StatusCode::CONFLICT, e.to_string()))?;
+    let root = lib.root.clone();
+    let libname = lib.name();
+    let _ = lilium_core::recent::touch(&root, &libname, "lilium");
+    let state2 = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut guard = state2.lib.lock().unwrap();
+        *guard = lib;
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(ok_json(json!({ "ok": true, "name": libname, "path": root.to_string_lossy() })))
+}
+
+#[derive(Deserialize)]
+struct CreateLibraryReq {
+    parent: String,
+    name: String,
+}
+
+/// 切换到最近库列表中的某个库
+async fn switch_library(state: State<ArcState>, Json(req): Json<LibraryPathReq>) -> Result<Response, ApiError> {
+    open_library(state, Json(req)).await
+}
+/// 从最近列表移除(不删文件)
+async fn remove_library(State(state): State<ArcState>, Json(req): Json<LibraryPathReq>) -> Result<Response, ApiError> {
+    let current_path = with_lib_blocking(&state, |lib| Ok(lib.root.to_string_lossy().to_string())).await?;
+    if req.path == current_path {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "不能移除当前打开的库".into()));
+    }
+    lilium_core::recent::remove(std::path::Path::new(&req.path))
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(ok_json(json!({ "ok": true })))
+}
+
+/// 清除当前库缩略图缓存并重新加载
+async fn clear_cache(State(state): State<ArcState>) -> Result<Response, ApiError> {
+    let removed = with_lib_blocking(&state, |lib| lib.clear_cache()).await?;
+    Ok(ok_json(json!({ "ok": true, "removedBytes": removed })))
 }
 
 // ---------- folders ----------

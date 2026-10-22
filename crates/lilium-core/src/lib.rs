@@ -7,6 +7,7 @@ pub mod library;
 pub mod meta;
 pub mod model;
 pub mod query;
+pub mod recent;
 pub mod thumbs;
 
 pub use error::{Error, Result};
