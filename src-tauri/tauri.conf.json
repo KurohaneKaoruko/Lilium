@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "app.lilium.desktop",
   "build": {
+    "beforeBuildCommand": "cd ../web && npm run build",
     "frontendDist": "../web/dist"
   },
   "app": {
