@@ -58,10 +58,15 @@ cd web && npm install && npm run build && cd ..
 
 ### Docker 部署（云服务器 / NAS）
 ```bash
-docker compose up -d          # 或 docker build -t lilium . && docker run -d -p 7333:7333 -v lilium-data:/data lilium
+docker run -d -p 7333:7333 -v lilium-data:/data ghcr.io/kurohanekaoruko/lilium:latest
+# 或源码构建: docker compose up -d
 # 访问 http://服务器IP:7333/
 ```
 - 数据持久化在 `lilium-data` 卷；把宿主机目录挂载到容器内后即可用「磁盘导入」路径导入
+
+### 下载安装包
+桌面端安装包（Windows `.exe`/`.msi`、macOS `.dmg`、Linux `.deb`/`.AppImage`/`.rpm`）见
+[Releases](https://github.com/KurohaneKaoruko/Lilium/releases/latest)。
 
 ## 📦 导入现有库
 
