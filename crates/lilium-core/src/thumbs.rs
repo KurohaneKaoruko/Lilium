@@ -7,11 +7,6 @@ const THUMB_SIZE: u32 = 640;
 /// 生成缩略图到 out_dir/{id}.png|jpg|svg，返回路径
 pub fn generate_thumbnail(file: &Path, id: &str, out_dir: &Path) -> Result<PathBuf, anyhow::Error> {
     std::fs::create_dir_all(out_dir)?;
-    let ext = file
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let _ = ext;
 
     // SVG：直接复制原图作为缩略图
     if file.extension().map(|e| e.to_string_lossy().to_lowercase() == "svg").unwrap_or(false) {

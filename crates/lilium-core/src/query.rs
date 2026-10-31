@@ -329,3 +329,96 @@ pub fn parse_hex_color(s: &str) -> Option<(i64, i64, i64)> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[test]
+    fn loose_int_accepts_strings_and_numbers() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(default)]
+            v: LooseInt,
+        }
+        let w: W = serde_json::from_str(r#"{"v": "42"}"#).unwrap();
+        assert_eq!(w.v.0, 42);
+        let w: W = serde_json::from_str(r#"{"v": 7}"#).unwrap();
+        assert_eq!(w.v.0, 7);
+        let w: W = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(w.v.0, 0);
+        // 非数字字符串应报错而不是静默为 0
+        assert!(serde_json::from_str::<W>(r#"{"v": "abc"}"#).is_err());
+    }
+
+    #[test]
+    fn loose_bool_accepts_common_forms() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(default)]
+            v: LooseBool,
+        }
+        for (src, want) in [
+            (r#"{"v": true}"#, true),
+            (r#"{"v": "true"}"#, true),
+            (r#"{"v": "1"}"#, true),
+            (r#"{"v": "yes"}"#, true),
+            (r#"{"v": false}"#, false),
+            (r#"{"v": "0"}"#, false),
+            (r#"{"v": ""}"#, false),
+        ] {
+            let w: W = serde_json::from_str(src).unwrap();
+            assert_eq!(*w.v, want, "src={src}");
+        }
+    }
+
+    #[test]
+    fn loose_vec_splits_csv_and_lists() {
+        #[derive(Deserialize)]
+        struct W {
+            #[serde(default)]
+            v: LooseVec,
+        }
+        let w: W = serde_json::from_str(r#"{"v": "image,video"}"#).unwrap();
+        assert_eq!(w.v.0, vec!["image", "video"]);
+        let w: W = serde_json::from_str(r#"{"v": ["image","video"]}"#).unwrap();
+        assert_eq!(w.v.0, vec!["image", "video"]);
+        let w: W = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(w.v.0.is_empty());
+    }
+
+    #[test]
+    fn parse_hex_color_variants() {
+        assert_eq!(parse_hex_color("#ffffff"), Some((255, 255, 255)));
+        assert_eq!(parse_hex_color("#000"), Some((0, 0, 0)));
+        assert_eq!(parse_hex_color("ff0000"), Some((255, 0, 0)));
+        assert_eq!(parse_hex_color("rgb(10, 20, 30)"), Some((10, 20, 30)));
+        assert_eq!(parse_hex_color("rgb(1,2)"), None);
+        assert_eq!(parse_hex_color("xyz"), None);
+    }
+
+    #[test]
+    fn sanitize_sort_whitelists_columns() {
+        assert_eq!(sanitize_sort("addedAt"), Some("added_at"));
+        assert_eq!(sanitize_sort("rating"), Some("rating"));
+        assert_eq!(sanitize_sort("1; DROP TABLE items"), None);
+    }
+
+    #[test]
+    fn build_produces_parameterized_sql() {
+        let q = Query {
+            tag: Some("a".into()),
+            rating_min: LooseInt(2),
+            q: Some("cat".into()),
+            ..Default::default()
+        };
+        let (sql, count_sql, args) = build(&q);
+        // tag=1 + rating_min=1 + 搜索词 3 处（name/note/tag LIKE）= 5
+        assert_eq!(args.len(), 5);
+        assert_eq!(count_sql.matches("?").count(), args.len());
+        assert!(sql.contains("ORDER BY"));
+        assert!(sql.contains("LIMIT"));
+        assert!(!sql.to_lowercase().contains("drop table"));
+    }
+}

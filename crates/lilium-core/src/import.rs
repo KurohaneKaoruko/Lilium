@@ -66,22 +66,20 @@ pub fn ingest_file(
     // 二级保护：同内容(SHA1)同尺寸 → 视为重复文件，同样幂等返回
     // （先算 hash 需要解码图片；用文件大小做廉价预筛，避免每个文件都解码）
     if size > 0 {
-        let dup_id = lib
-            .conn
-            .query_row(
-                "SELECT id FROM items WHERE size = ?1 AND source_path != ?2 AND trash = 0 LIMIT 1",
-                rusqlite::params![size, src_str],
-                |r| r.get::<_, String>(0),
-            )
-            .ok();
-        if let Some(dup_id) = dup_id {
+        let dup_ids: Vec<String> = {
+            let mut stmt = lib
+                .conn
+                .prepare("SELECT id FROM items WHERE size = ?1 AND source_path != ?2 AND trash = 0")?;
+            let rows = stmt.query_map(rusqlite::params![size, src_str], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+        let src_hash = if dup_ids.is_empty() { None } else { Some(crate::eagle::sha1_hex_file(src)) };
+        for dup_id in dup_ids {
             if let Some(dup) = lib.get_item(&dup_id) {
-                if let Some(dup_hash) = &dup.hash {
-                    if dup_hash == &crate::eagle::sha1_hex_file(src) {
-                        let mut item = lib.get_item(&dup_id).ok_or_else(|| anyhow::anyhow!("读取重复条目失败"))?;
-                        item.tags = vec![];
-                        return Ok((item, false));
-                    }
+                if dup.hash.as_deref() == src_hash.as_deref() {
+                    let mut item = lib.get_item(&dup_id).ok_or_else(|| anyhow::anyhow!("读取重复条目失败"))?;
+                    item.tags = vec![];
+                    return Ok((item, false));
                 }
             }
         }
@@ -181,12 +179,12 @@ pub fn collect_files(path: &Path, recursive: bool) -> Vec<PathBuf> {
     out
 }
 
-/// 导入本地路径（文件或目录），返回 (导入条目, 错误列表)
+/// 导入本地路径（文件或目录），返回导入的新增条目数
 pub fn import_paths_sync(
     lib: &Library,
     path: &Path,
     folder_id: Option<&str>,
-    opts: &ImportOptions,
+    _opts: &ImportOptions,
     queue: &JobQueue,
 ) -> Result<usize, anyhow::Error> {
     let files = collect_files(path, true);
@@ -198,7 +196,6 @@ pub fn import_paths_sync(
             }
         }
     }
-    let _ = opts;
     Ok(n)
 }
 
@@ -286,4 +283,37 @@ pub fn read_head(path: &Path, n: usize) -> std::io::Result<Vec<u8>> {
     }
     buf.truncate(read);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_head_truncates_and_handles_short_files() {
+        let dir = std::env::temp_dir().join(format!("lilium-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f.bin");
+        std::fs::write(&p, vec![0u8; 100]).unwrap();
+        assert_eq!(read_head(&p, 10).unwrap().len(), 10);
+        assert_eq!(read_head(&p, 1000).unwrap().len(), 100);
+        assert!(read_head(&dir.join("missing.bin"), 10).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn collect_files_non_recursive_lists_only_top_level() {
+        let dir = std::env::temp_dir().join(format!("lilium-collect-{}", std::process::id()));
+        let sub = dir.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(dir.join("a.png"), b"x").unwrap();
+        std::fs::write(sub.join("b.png"), b"y").unwrap();
+
+        let top = collect_files(&dir, false);
+        assert_eq!(top.len(), 1, "非递归只取顶层");
+
+        let all = collect_files(&dir, true);
+        assert_eq!(all.len(), 2, "递归应包含子目录");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

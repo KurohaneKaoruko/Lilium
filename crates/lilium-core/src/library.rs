@@ -72,8 +72,28 @@ impl Library {
                 .map(|e| e == "lilium")
                 .unwrap_or(false)
             {
-                if canonical.exists() {
-                    std::fs::remove_dir_all(&canonical).ok();
+                if canonical.is_dir() {
+                    // 空目录先移除（create 要求目标不存在），非空目录走下方保护逻辑
+                    let is_empty = std::fs::read_dir(&canonical).map(|mut d| d.next().is_none()).unwrap_or(false);
+                    if is_empty {
+                        std::fs::remove_dir(&canonical).ok();
+                    }
+                }
+                if canonical.is_dir() && std::fs::read_dir(&canonical).map(|mut d| d.next().is_some()).unwrap_or(false) {
+                    // 目录已存在且非空：不覆盖（防止误删数据）。
+                    // 含 images/ 或 thumbnails/ → 视为损坏的库目录，补齐缺失结构后打开
+                    if canonical.join("images").is_dir() || canonical.join("thumbnails").is_dir() {
+                        std::fs::create_dir_all(canonical.join("images"))?;
+                        std::fs::create_dir_all(canonical.join("thumbnails"))?;
+                        let conn = db::open_db(&canonical.join("library.db"))?;
+                        let lib = Library { root: canonical.clone(), conn };
+                        let _ = crate::recent::touch(&lib.root, &lib.name(), "lilium");
+                        return Ok((lib, false));
+                    }
+                    return Err(anyhow::anyhow!(
+                        "目录非空且不是有效的库: {}",
+                        canonical.display()
+                    ));
                 }
                 (
                     canonical.parent().unwrap_or(Path::new(".")).to_path_buf(),
@@ -516,11 +536,32 @@ impl Library {
     pub fn update_item(&self, id: &str, patch: &import::ItemPatch) -> Result<Item, anyhow::Error> {
         let mut sets: Vec<String> = vec![];
         let mut args: Vec<query::Arg> = vec![];
-        if let Some(v) = &patch.name { sets.push("name=?".into()); args.push(query::Arg::S(v.clone())); }
-        if let Some(v) = patch.rating { sets.push("rating=?".into()); args.push(query::Arg::I(v)); }
+        if let Some(v) = &patch.name {
+            let name = v.trim();
+            if name.is_empty() {
+                return Err(anyhow::anyhow!("名称不能为空"));
+            }
+            sets.push("name=?".into());
+            args.push(query::Arg::S(name.to_string()));
+        }
+        if let Some(v) = patch.rating {
+            sets.push("rating=?".into());
+            args.push(query::Arg::I(v.clamp(0, 5)));
+        }
         if let Some(v) = &patch.note { sets.push("note=?".into()); args.push(query::Arg::S(v.clone())); }
         if let Some(v) = &patch.url { sets.push("url=?".into()); args.push(query::Arg::S(v.clone())); }
-        if let Some(v) = &patch.folder_id { sets.push("folder_id=?".into()); args.push(query::Arg::S(v.clone())); }
+        if let Some(v) = &patch.folder_id {
+            // 目标文件夹必须存在，避免悬空引用
+            let exists: i64 = self
+                .conn
+                .query_row("SELECT COUNT(*) FROM folders WHERE id=?1", [v], |r| r.get(0))
+                .unwrap_or(0);
+            if exists == 0 {
+                return Err(anyhow::anyhow!("目标文件夹不存在: {v}"));
+            }
+            sets.push("folder_id=?".into());
+            args.push(query::Arg::S(v.clone()));
+        }
         if !sets.is_empty() {
             let sql = format!("UPDATE items SET {} WHERE id=?", sets.join(","));
             args.push(query::Arg::S(id.to_string()));
@@ -635,6 +676,7 @@ impl Library {
     }
 
     pub fn batch_rating(&self, ids: &[String], rating: i64) -> Result<(), anyhow::Error> {
+        let rating = rating.clamp(0, 5);
         let tx = self.conn.unchecked_transaction()?;
         for id in ids {
             tx.execute("UPDATE items SET rating=?1 WHERE id=?2", params![rating, id])?;
@@ -644,6 +686,16 @@ impl Library {
     }
 
     pub fn batch_move(&self, ids: &[String], folder_id: Option<&str>) -> Result<(), anyhow::Error> {
+        // 目标文件夹必须存在（None 表示移到未分类）
+        if let Some(fid) = folder_id {
+            let exists: i64 = self
+                .conn
+                .query_row("SELECT COUNT(*) FROM folders WHERE id=?1", [fid], |r| r.get(0))
+                .unwrap_or(0);
+            if exists == 0 {
+                return Err(anyhow::anyhow!("目标文件夹不存在: {fid}"));
+            }
+        }
         let tx = self.conn.unchecked_transaction()?;
         for id in ids {
             tx.execute("UPDATE items SET folder_id=?1 WHERE id=?2", params![folder_id, id])?;
@@ -725,7 +777,7 @@ impl Library {
             .map(|rs| rs.filter_map(|r| r.ok()).collect())
             .unwrap_or_default();
         let mut by_hash: std::collections::HashMap<String, Vec<Item>> = Default::default();
-        for it in items {
+        for it in &items {
             if let Some(h) = &it.hash {
                 by_hash.entry(h.clone()).or_default().push(it.clone());
             }
@@ -734,6 +786,44 @@ impl Library {
             if group.len() > 1 {
                 self.attach_tags(&mut group);
                 groups.push((format!("相同内容 {h}"), group));
+            }
+        }
+
+        // 2) 相似感知哈希（dHash 汉明距离 ≤ 6），跳过已按内容归组的条目
+        let grouped: std::collections::HashSet<String> = groups
+            .iter()
+            .flat_map(|(_, g)| g.iter().map(|i| i.id.clone()))
+            .collect();
+        let phashed: Vec<(u64, Item)> = items
+            .iter()
+            .filter(|it| !grouped.contains(&it.id))
+            .filter_map(|it| {
+                let v = it.phash.as_ref()?;
+                u64::from_str_radix(v, 16).ok().map(|u| (u, it.clone()))
+            })
+            .collect();
+        // 按汉明距离聚类（贪心：取首个未分组成员为种子）
+        let mut used = vec![false; phashed.len()];
+        for i in 0..phashed.len() {
+            if used[i] {
+                continue;
+            }
+            let (seed, _) = phashed[i];
+            let mut group = vec![phashed[i].1.clone()];
+            used[i] = true;
+            for j in (i + 1)..phashed.len() {
+                if used[j] {
+                    continue;
+                }
+                let (u, _) = phashed[j];
+                if (u ^ seed).count_ones() <= 6 {
+                    group.push(phashed[j].1.clone());
+                    used[j] = true;
+                }
+            }
+            if group.len() > 1 {
+                self.attach_tags(&mut group);
+                groups.push(("相似图片 (dHash)".into(), group));
             }
         }
         groups
@@ -873,4 +963,281 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jobs::JobQueue;
+
+    /// 每个测试独立的临时库（进程内唯一目录，测试结束后由调用方清理）
+    fn temp_lib(tag: &str) -> (Library, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "lilium-test-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = Library::create(&dir, tag).unwrap();
+        (lib, dir)
+    }
+
+    /// 生成一张简单的测试 PNG
+    fn test_png(dir: &Path, name: &str, w: u32, h: u32, color: [u8; 3]) -> std::path::PathBuf {
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([color[0], color[1], color[2], 255]));
+        let p = dir.join(name);
+        img.save_with_format(&p, image::ImageFormat::Png).unwrap();
+        p
+    }
+
+    #[test]
+    fn create_open_and_meta() {
+        let (lib, dir) = temp_lib("meta");
+        assert_eq!(lib.name(), "meta");
+        assert!(lib.root.join("library.db").is_file());
+        // 重复创建报错
+        let parent = lib.root.parent().unwrap().to_path_buf();
+        assert!(Library::create(&parent, "meta").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_or_create_rejects_nonempty_dir() {
+        let base = std::env::temp_dir().join(format!("lilium-test-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let target = base.join("guard.lilium");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("notes.txt"), "user data").unwrap();
+        // 非空且不是有效库结构的 .lilium 目录必须报错，而不是清空重建
+        assert!(Library::open_or_create(&target).is_err());
+        assert!(target.join("notes.txt").is_file());
+        // 空目录 → 正常创建
+        let empty = base.join("empty.lilium");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(Library::open_or_create(&empty).is_ok());
+        // 已有 library.db 的目录 → 正常打开（不再要求 images/thumbnails 存在）
+        assert!(Library::open_or_create(&empty).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn folder_crud_and_cycle_guard() {
+        let (lib, dir) = temp_lib("folders");
+        let f1 = lib.create_folder(None, "A").unwrap();
+        let f2 = lib.create_folder(Some(&f1.id), "B").unwrap();
+        let mut names: Vec<String> = lib.list_folders().iter().map(|f| f.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["A".to_string(), "B".to_string()]);
+        // 禁止把父级移动到子级（成环）
+        assert!(lib.move_folder(&f1.id, Some(&f2.id)).is_err());
+        // 重命名
+        lib.rename_folder(&f1.id, "A2").unwrap();
+        assert_eq!(lib.list_folders()[0].name, "A2");
+        // 删除后子文件夹上提
+        lib.delete_folder(&f1.id).unwrap();
+        let rest = lib.list_folders();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, f2.id);
+        assert!(rest[0].parent_id.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ingest_query_trash_and_purge() {
+        let (lib, dir) = temp_lib("items");
+        let (queue, _rx) = JobQueue::new();
+        let tmp = std::env::temp_dir().join(format!("lilium-src-{}.png", std::process::id()));
+        let src = test_png(std::env::temp_dir().as_path(), &tmp.file_name().unwrap().to_string_lossy(), 32, 32, [200, 10, 10]);
+
+        let (item, created) = import::ingest_file(&lib, &src, None, None, &queue).unwrap();
+        assert!(created);
+        // 同路径重复导入幂等
+        let (item2, created2) = import::ingest_file(&lib, &src, None, None, &queue).unwrap();
+        assert!(!created2);
+        assert_eq!(item.id, item2.id);
+        assert_eq!((item.width, item.height), (Some(32), Some(32)));
+
+        // 查询可见
+        let q = query::Query { ..Default::default() };
+        let (items, total) = lib.query_items(&q);
+        assert_eq!((items.len(), total), (1, 1));
+
+        // 回收站：默认查询不显示，trash 查询可见
+        lib.trash_item(&item.id).unwrap();
+        let (_, total_live) = lib.query_items(&query::Query { ..Default::default() });
+        let (_, total_trash) = lib.query_items(&query::Query { trash: query::LooseBool(true), ..Default::default() });
+        assert_eq!((total_live, total_trash), (0, 1));
+        // 恢复
+        lib.restore_item(&item.id).unwrap();
+        let (_, total_restored) = lib.query_items(&query::Query { ..Default::default() });
+        assert_eq!(total_restored, 1);
+
+        // 彻底删除：文件与 DB 记录一并移除
+        let file = lib.item_file_path(&item.id).unwrap();
+        assert!(file.is_file());
+        lib.purge_item(&item.id).unwrap();
+        assert!(!file.exists());
+        assert!(lib.get_item(&item.id).is_none());
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tags_and_batch_operations() {
+        let (lib, dir) = temp_lib("tags");
+        let (queue, _rx) = JobQueue::new();
+        let tmp = std::env::temp_dir().join(format!("lilium-tag-{}.png", std::process::id()));
+        let src = test_png(std::env::temp_dir().as_path(), &tmp.file_name().unwrap().to_string_lossy(), 16, 16, [10, 200, 10]);
+        let (item, _) = import::ingest_file(&lib, &src, None, None, &queue).unwrap();
+
+        lib.create_tag("风景", "#22c55e").unwrap();
+        lib.batch_tag(&[item.id.clone()], "风景", false).unwrap();
+        let tags = lib.list_tags();
+        assert_eq!(tags.len(), 1);
+        assert_eq!((tags[0].name.as_str(), tags[0].count), ("风景", 1));
+
+        // 批量评分 + 范围约束
+        lib.batch_rating(&[item.id.clone()], 9).unwrap();
+        assert_eq!(lib.get_item(&item.id).unwrap().rating, 5);
+        lib.batch_rating(&[item.id.clone()], -1).unwrap();
+        assert_eq!(lib.get_item(&item.id).unwrap().rating, 0);
+
+        // 单条 update 校验评分 clamp 与空名称拒绝
+        let patched = lib
+            .update_item(&item.id, &import::ItemPatch { rating: Some(3), ..Default::default() })
+            .unwrap();
+        assert_eq!(patched.rating, 3);
+        assert!(lib
+            .update_item(&item.id, &import::ItemPatch { name: Some("  ".into()), ..Default::default() })
+            .is_err());
+
+        // 标签重命名 & 删除
+        lib.rename_tag("风景", "scenery", Some("#3b82f6")).unwrap();
+        let tags = lib.list_tags();
+        assert_eq!((tags[0].name.as_str(), tags[0].color.as_str()), ("scenery", "#3b82f6"));
+        lib.delete_tag("scenery").unwrap();
+        assert!(lib.list_tags().is_empty());
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_move_validates_folder() {
+        let (lib, dir) = temp_lib("move");
+        let (queue, _rx) = JobQueue::new();
+        let tmp = std::env::temp_dir().join(format!("lilium-move-{}.png", std::process::id()));
+        let src = test_png(std::env::temp_dir().as_path(), &tmp.file_name().unwrap().to_string_lossy(), 16, 16, [10, 10, 200]);
+        let (item, _) = import::ingest_file(&lib, &src, None, None, &queue).unwrap();
+
+        assert!(lib.batch_move(&[item.id.clone()], Some("不存在")).is_err());
+        let f = lib.create_folder(None, "目标").unwrap();
+        lib.batch_move(&[item.id.clone()], Some(&f.id)).unwrap();
+        assert_eq!(lib.get_item(&item.id).unwrap().folder_id, Some(f.id));
+        // 移回未分类
+        lib.batch_move(&[item.id.clone()], None).unwrap();
+        assert_eq!(lib.get_item(&item.id).unwrap().folder_id, None);
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn smart_folder_crud() {
+        let (lib, dir) = temp_lib("smart");
+        let q = serde_json::json!({ "ratingMin": 3 });
+        let sf = lib.create_smart_folder("高分", &q).unwrap();
+        assert_eq!(lib.list_smart_folders().len(), 1);
+        lib.update_smart_folder(&sf.id, "高分图片", &serde_json::json!({ "ratingMin": 4 })).unwrap();
+        let all = lib.list_smart_folders();
+        assert_eq!(all[0].name, "高分图片");
+        assert_eq!(all[0].query["ratingMin"], 4);
+        lib.delete_smart_folder(&sf.id).unwrap();
+        assert!(lib.list_smart_folders().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicates_groups_by_hash() {
+        let (lib, dir) = temp_lib("dups");
+        let (queue, _rx) = JobQueue::new();
+        let tmp = std::env::temp_dir().join(format!("lilium-dup-{}.png", std::process::id()));
+        let src = test_png(std::env::temp_dir().as_path(), &tmp.file_name().unwrap().to_string_lossy(), 24, 24, [99, 99, 99]);
+        // 同一文件导入到不同位置 → 内容相同但路径不同 → 应进「相同内容」组
+        // 同内容第二次导入 → 命中去重，返回同一条目
+        let (a, created_first) = import::ingest_file(&lib, &src, None, Some("a.png"), &queue).unwrap();
+        assert!(created_first);
+        let (b, created) = import::ingest_file(&lib, &src, None, Some("b.png"), &queue).unwrap();
+        assert!(!created, "同内容应命中去重");
+        assert_eq!(a.id, b.id);
+
+        // 手动制造一对相同 hash 的条目 → find_duplicates 应按内容分组
+        lib.conn
+            .execute(
+                "INSERT INTO items(id,name,ext,kind,size,hash,phash,added_at,created_at)
+                 VALUES('DUP00000000000000001','c.png','png','image',1,?1,?2,0,0)",
+                rusqlite::params![a.hash.clone().unwrap_or_else(|| "x".into()), a.phash.clone().unwrap_or_else(|| "0".into())],
+            )
+            .unwrap();
+        let groups = lib.find_duplicates();
+        assert!(groups.iter().any(|(reason, g)| reason.starts_with("相同内容") && g.len() == 2));
+        // 手造条目无 phash 相似对 → 不应出现「相似图片」组
+        assert!(groups.iter().all(|(reason, _)| !reason.starts_with("相似图片")));
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_roundtrip() {
+        let (lib, dir) = temp_lib("settings");
+        lib.settings_set("autoImport", &serde_json::json!(false)).unwrap();
+        let all = lib.settings_get_all();
+        assert_eq!(all["autoImport"], serde_json::json!(false));
+        assert_eq!(all["watchFolders"], serde_json::json!([]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn query_filters_and_sort() {
+        let (lib, dir) = temp_lib("query");
+        let (queue, _rx) = JobQueue::new();
+        let tmp1 = std::env::temp_dir().join(format!("lilium-q1-{}.png", std::process::id()));
+        let tmp2 = std::env::temp_dir().join(format!("lilium-q2-{}.png", std::process::id()));
+        let s1 = test_png(std::env::temp_dir().as_path(), &tmp1.file_name().unwrap().to_string_lossy(), 16, 16, [1, 2, 3]);
+        let s2 = test_png(std::env::temp_dir().as_path(), &tmp2.file_name().unwrap().to_string_lossy(), 16, 16, [250, 250, 250]);
+        let (i1, _) = import::ingest_file(&lib, &s1, None, Some("alpha.png"), &queue).unwrap();
+        let (i2, _) = import::ingest_file(&lib, &s2, None, Some("beta.png"), &queue).unwrap();
+        lib.batch_rating(&[i1.id.clone()], 4).unwrap();
+        lib.create_tag("收藏", "#f59e0b").unwrap();
+        lib.batch_tag(&[i2.id.clone()], "收藏", false).unwrap();
+
+        // 名称搜索（不区分大小写）
+        let (_, total) = lib.query_items(&query::Query { q: Some("ALPHA".into()), ..Default::default() });
+        assert_eq!(total, 1);
+        // 标签过滤
+        let (_, total) = lib.query_items(&query::Query { tag: Some("收藏".into()), ..Default::default() });
+        assert_eq!(total, 1);
+        // 评分下限
+        let (_, total) = lib.query_items(&query::Query { rating_min: query::LooseInt(3), ..Default::default() });
+        assert_eq!(total, 1);
+        // 未打标过滤
+        let (_, total) = lib.query_items(&query::Query { untagged: query::LooseBool(true), ..Default::default() });
+        assert_eq!(total, 1);
+        // 随机排序不丢条目
+        let (items, total) = lib.query_items(&query::Query {
+            sort: Some("random".into()),
+            seed: query::LooseInt(42),
+            ..Default::default()
+        });
+        assert_eq!((items.len(), total), (2, 2));
+        // 排序白名单：未知排序回落 addedAt 而不是报错
+        let (items, _) = lib.query_items(&query::Query { sort: Some("'; DROP TABLE items;--".into()), ..Default::default() });
+        assert_eq!(items.len(), 2);
+
+        let _ = std::fs::remove_file(&s1);
+        let _ = std::fs::remove_file(&s2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

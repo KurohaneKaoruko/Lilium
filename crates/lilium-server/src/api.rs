@@ -75,7 +75,7 @@ async fn libraries(State(state): State<ArcState>) -> Result<Response, ApiError> 
             json!({
                 "path": e.path,
                 "name": e.name,
-                "lastOpened": e.lastOpened,
+                "lastOpened": e.last_opened,
                 "kind": e.kind,
                 "exists": std::path::Path::new(&e.path).exists(),
                 "current": e.path == current_path,
@@ -190,6 +190,7 @@ struct UpdateFolderReq {
     name: Option<String>,
     #[serde(default)]
     parent_id: Option<String>,
+    #[serde(default)]
     move_to_root: bool,
 }
 
@@ -375,7 +376,14 @@ async fn update_item(
     Json(req): Json<UpdateItemReq>,
 ) -> Result<Response, ApiError> {
     with_lib_blocking(&state, move |lib| {
-        lib.update_item(&id, &req.patch).map(|it| Json(it).into_response())
+        let mut patch = req.patch;
+        // 前端用空字符串 / "null" 表示「移出文件夹」
+        if let Some(fid) = patch.folder_id.as_ref() {
+            if fid.is_empty() || fid == "null" {
+                patch.folder_id = None;
+            }
+        }
+        lib.update_item(&id, &patch).map(|it| Json(it).into_response())
     })
     .await
 }
@@ -486,6 +494,14 @@ struct BatchReq {
     folder_id: Option<String>,
 }
 
+/// 空字符串 / "null" 归一为 None（前端用空值表示「移到未分类」）
+fn clean_folder_id(id: Option<&str>) -> Option<&str> {
+    match id {
+        Some(s) if !s.is_empty() && s != "null" => Some(s),
+        _ => None,
+    }
+}
+
 async fn batch(State(state): State<ArcState>, Json(req): Json<BatchReq>) -> Result<Response, ApiError> {
     with_lib_blocking(&state, move |lib| {
         let n = match req.action.as_str() {
@@ -500,7 +516,7 @@ async fn batch(State(state): State<ArcState>, Json(req): Json<BatchReq>) -> Resu
                 req.ids.len()
             }
             "move" => {
-                lib.batch_move(&req.ids, req.folder_id.as_deref())?;
+                lib.batch_move(&req.ids, clean_folder_id(req.folder_id.as_deref()))?;
                 req.ids.len()
             }
             "trash" => lib.batch_trash(&req.ids)?,
@@ -544,7 +560,9 @@ async fn import_paths(State(state): State<ArcState>, Json(req): Json<ImportPaths
         let mut errors = vec![];
         for p in &req.paths {
             let path = std::path::PathBuf::from(shellexpand(p));
-            match lilium_core::import::import_paths_sync(lib, &path, req.folder_id.as_deref(), &opts, &queue) {
+            // 空字符串 / "null" 表示未分类
+            let fid = clean_folder_id(req.folder_id.as_deref());
+            match lilium_core::import::import_paths_sync(lib, &path, fid, &opts, &queue) {
                 Ok(n) => total += n,
                 Err(e) => errors.push(format!("{}: {e}", path.display())),
             }
@@ -573,10 +591,9 @@ async fn import_upload(State(state): State<ArcState>, mut multipart: Multipart) 
     {
         match field.name().unwrap_or("") {
             "folderId" => {
-                folder_id = Some(field.text().await.unwrap_or_default());
-                if folder_id.as_deref() == Some("") {
-                    folder_id = None;
-                }
+                let v = field.text().await.unwrap_or_default();
+                // 空字符串 / "null" 表示未分类
+                folder_id = if v.is_empty() || v == "null" { None } else { Some(v) };
             }
             _ => {
                 let name = field
@@ -585,7 +602,7 @@ async fn import_upload(State(state): State<ArcState>, mut multipart: Multipart) 
                     .unwrap_or_default();
                 // 浏览器/表单有时丢失扩展名，这里从 content-type 兜底恢复
                 let name = if name.is_empty() {
-                    format!("{}", lilium_core::jobs::new_id())
+                    lilium_core::jobs::new_id().to_string()
                 } else {
                     name
                 };
@@ -622,7 +639,8 @@ struct ImportUrlReq {
 async fn import_url(State(state): State<ArcState>, Json(req): Json<ImportUrlReq>) -> Result<Response, ApiError> {
     let lib = state.lib.clone();
     let queue = state.queue.clone();
-    let item = lilium_core::import::import_url(lib, &req.url, req.folder_id, (*queue).clone())
+    let folder_id = clean_folder_id(req.folder_id.as_deref()).map(|s| s.to_string());
+    let item = lilium_core::import::import_url(lib, &req.url, folder_id, (*queue).clone())
         .await
         .map_err(ApiError::from)?;
     Ok(ok_json(json!({ "item": item })))

@@ -205,3 +205,69 @@ impl<T> ContextExt<T> for anyhow::Result<T> {
 pub fn ensure(v: bool, msg: &str) -> Result<(), anyhow::Error> {
     if v { Ok(()) } else { Err(anyhow!(msg.to_string())) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_of_covers_main_types() {
+        assert_eq!(kind_of("PNG"), "image");
+        assert_eq!(kind_of("jpg"), "image");
+        assert_eq!(kind_of("svg"), "image");
+        assert_eq!(kind_of("MP4"), "video");
+        assert_eq!(kind_of("mkv"), "video");
+        assert_eq!(kind_of("mp3"), "audio");
+        assert_eq!(kind_of("ttf"), "font");
+        assert_eq!(kind_of("pdf"), "document");
+        assert_eq!(kind_of("xyz"), "other");
+        assert_eq!(kind_of(""), "other");
+    }
+
+    #[test]
+    fn image_dimensions_reads_png_and_rejects_garbage() {
+        let dir = std::env::temp_dir().join(format!("lilium-meta-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("t.png");
+        image::RgbaImage::from_pixel(7, 13, image::Rgba([1, 2, 3, 255]))
+            .save_with_format(&p, image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(image_dimensions(&p), Some((7, 13)));
+        let bad = dir.join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        assert_eq!(image_dimensions(&bad), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn svg_dimensions_handles_width_height_and_viewbox() {
+        let dir = std::env::temp_dir().join(format!("lilium-svg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.svg");
+        std::fs::write(&a, r#"<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"></svg>"#).unwrap();
+        assert_eq!(svg_dimensions(&a), Some((320, 200)));
+        // 百分比尺寸 → 回落 viewBox
+        let b = dir.join("b.svg");
+        std::fs::write(&b, r#"<svg width="100%" height="100%" viewBox="0 0 640 480"></svg>"#).unwrap();
+        assert_eq!(svg_dimensions(&b), Some((640, 480)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mime_of_maps_common_exts() {
+        assert_eq!(mime_of("png"), "image/png");
+        assert_eq!(mime_of("jpg"), "image/jpeg");
+        assert_eq!(mime_of("mp4"), "video/mp4");
+        assert_eq!(mime_of("unknownext"), "application/octet-stream");
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        let dir = std::env::temp_dir().join(format!("lilium-decode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        assert!(decode_image(&bad).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

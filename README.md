@@ -102,6 +102,68 @@ web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 - 库结构：`MyLib.lilium/library.db (SQLite) + images/xx/<id>.<ext> + thumbnails/xx/<id>.jpg`
 - 条目 ID 为 20 位大写字母数字，导入已有库条目时**沿用原 ID**，可重复导入不产生副本
 
+## 🛠️ 开发说明
+
+### 常用命令
+
+```bash
+# 构建与测试（Rust 侧）
+cargo build
+cargo test                     # 全部单元测试（core 26 + server 3）
+
+# 只构建 / 测试某个 crate
+cargo build -p lilium-core
+cargo test  -p lilium-core
+
+# 检查（比 build 快，不产出二进制）
+cargo check
+
+# 前端开发（Vite 热更新，API 代理到 7333 端口）
+cd web && npm install && npm run dev
+
+# 生成示例图片（用于本地演示 / 测试）
+cargo run -p lilium-server --bin gen-samples -- sample-images
+```
+
+### 服务端 CLI 参数
+
+```bash
+lilium-server [选项]
+  -p, --port <端口>     监听端口（默认 7333，被占用时自动 +1 重试）
+  -l, --library <路径>  库路径（.lilium 库或 Eagle .library 目录）
+      --dist <目录>     Web 前端静态目录（默认自动探测 web/dist）
+      --open            启动后打开浏览器
+  -h, --help            帮助
+```
+
+环境变量：`LILIUM_LIBRARY`（默认库路径）、`LILIUM_PORT`（默认端口）。
+
+### API 概览
+
+REST API 挂载在 `/api` 前缀下（完整列表见 `crates/lilium-server/src/api.rs` 的 `router`）：
+
+| 分组 | 端点 |
+|---|---|
+| 库 | `GET /api/info` · `GET /api/stats` · `GET/POST /api/libraries` · `POST /api/libraries/{create,switch,remove,clear-cache}` |
+| 文件夹 | `GET/POST /api/folders` · `PATCH/DELETE /api/folders/{id}` |
+| 标签 | `GET/POST /api/tags` · `PATCH/DELETE /api/tags/{name}` |
+| 智能文件夹 | `GET/POST /api/smart-folders` · `PUT/DELETE /api/smart-folders/{id}` |
+| 条目 | `GET /api/items`（分页/搜索/排序/过滤）· `GET/PATCH/DELETE /api/items/{id}` · `POST /api/items/{id}/{restore,tags/{tag}}` |
+| 文件 | `GET /api/items/{id}/file` · `GET /api/thumbs/{id}`（带 ETag/304 缓存） |
+| 导入 | `POST /api/import/{paths,upload,url,eagle}` |
+| 批量 | `POST /api/batch`（tag/rating/move/trash/restore/purge）· `POST /api/batch-rename` |
+| 工具 | `GET /api/duplicates` · `GET /api/suggest` · `GET/PATCH /api/settings` · `POST /api/watch-scan` |
+
+查询参数支持宽松类型（`kinds=image,video` 或 `kinds=image&kinds=video` 均可），
+排序字段走白名单（`addedAt/createdAt/name/size/width/height/rating/duration/random`），无注入风险。
+
+### 测试约定
+
+- 测试库/临时文件统一建立在系统临时目录，命名带进程 PID 隔离，测试结束自行清理
+- core 测试覆盖：库生命周期、文件夹树（含成环保护）、导入去重（路径级 + 内容级）、
+  回收站、批量操作、标签、智能文件夹、重复检测、查询过滤器与排序白名单
+- server 测试覆盖：API 契约（重命名文件夹回归、空 folderId 语义、非法目标 400）
+
 ## 📋 系统要求
 
 - 缩略图 / EXIF：无需外部依赖（纯 Rust）

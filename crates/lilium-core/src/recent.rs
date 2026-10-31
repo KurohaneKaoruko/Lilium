@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct LibraryEntry {
     pub path: String,
     pub name: String,
-    pub lastOpened: i64,
+    #[serde(rename = "lastOpened", alias = "last_opened")]
+    pub last_opened: i64,
     /// lilium = 原生库目录;eagle = 由 Eagle 库导入生成的伴生库
     pub kind: String,
 }
@@ -53,7 +54,7 @@ pub fn touch(path: &Path, name: &str, kind: &str) -> anyhow::Result<()> {
         LibraryEntry {
             path: ps,
             name: name.to_string(),
-            lastOpened: crate::jobs::now_ms(),
+            last_opened: crate::jobs::now_ms(),
             kind: kind.to_string(),
         },
     );

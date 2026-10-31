@@ -19,7 +19,14 @@ impl IntoResponse for ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        // 校验类错误（不存在/非法参数）返回 400，其余视为服务器内部错误
+        let msg = e.to_string();
+        let status = if msg.contains("不存在") || msg.contains("不能") || msg.contains("缺少") || msg.contains("不能为空") {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        ApiError(status, msg)
     }
 }
 

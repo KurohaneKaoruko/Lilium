@@ -215,3 +215,157 @@ pub fn spawn_watch_scan(lib: Arc<Mutex<Library>>, queue: std::sync::Arc<JobQueue
         cfg
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::ArcState;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    /// 构造带临时库的测试应用
+    fn test_app(tag: &str) -> (axum::Router, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("lilium-server-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let lib = Library::create(&base, tag).unwrap();
+        let state: ArcState = std::sync::Arc::new(ServerState {
+            lib: std::sync::Arc::new(std::sync::Mutex::new(lib)),
+            queue: JobQueue::new().0.into(),
+            version: "test",
+        });
+        // api 模块私有 → 通过 serve_embedded 不合适，直接复用内部 router
+        (api::router(state), base)
+    }
+
+    async fn post_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+        (status, v)
+    }
+
+    async fn patch_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+        (status, v)
+    }
+
+    async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let res = app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+        (status, v)
+    }
+
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        use image::ImageBuffer;
+        let mut out = std::io::Cursor::new(Vec::new());
+        let img: image::RgbaImage = ImageBuffer::from_pixel(w, h, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    }
+
+    #[tokio::test]
+    async fn rename_folder_without_move_fields_is_accepted() {
+        // 回归：move_to_root 缺 serde(default) 导致仅重命名请求 422
+        let (app, base) = test_app("rename");
+        let (status, v) = post_json(app.clone(), "/api/folders", r#"{"name":"A"}"#.into()).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (status, v) = patch_json(app.clone(), &format!("/api/folders/{id}"), r#"{"name":"B"}"#.into()).await;
+        assert_eq!(status, StatusCode::OK, "仅重命名不应被拒绝: {v}");
+        let (status, folders) = get_json(app, "/api/folders").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(folders[0]["name"], "B");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn batch_move_to_empty_folder_id_clears_folder() {
+        let (app, base) = test_app("moveto");
+        // 建文件夹
+        let (_, f) = post_json(app.clone(), "/api/folders", r#"{"name":"F"}"#.into()).await;
+        let fid = f["id"].as_str().unwrap().to_string();
+        // 上传一张图
+        let boundary = "----liliumtest";
+        let png = png_bytes(16, 16);
+        let body = format!(
+            "--{b}\r\ncontent-disposition: form-data; name=\"folderId\"\r\n\r\n{fid}\r\n--{b}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"x.png\"\r\ncontent-type: image/png\r\n\r\n",
+            b = boundary,
+            fid = fid
+        );
+        let mut full = body.into_bytes();
+        full.extend_from_slice(&png);
+        full.extend_from_slice(format!("\r\n--{boundary}--\r\n", boundary = boundary).as_bytes());
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/upload")
+                    .header("content-type", format!("multipart/form-data; boundary={boundary}", boundary = boundary))
+                    .body(Body::from(full))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let item_id = v["items"][0]["id"].as_str().unwrap().to_string();
+
+        // move 到 folderId: "" → 应回退为未分类
+        let (status, v) = post_json(
+            app.clone(),
+            "/api/batch",
+            format!(r#"{{"ids":["{item_id}"],"action":"move","folderId":""}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let (_, items) = get_json(app, "/api/items").await;
+        assert_eq!(items["items"][0]["folderId"], Value::Null);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn batch_move_to_missing_folder_is_400() {
+        let (app, base) = test_app("movemiss");
+        let (status, v) = post_json(
+            app,
+            "/api/batch",
+            format!(r#"{{"ids":["NOPE"],"action":"move","folderId":"MISSING"}}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

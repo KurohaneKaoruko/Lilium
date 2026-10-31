@@ -41,8 +41,16 @@ pub fn read_library_name(root: &Path) -> Option<String> {
 pub fn sha1_hex_file(path: &Path) -> String {
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
-    if let Ok(data) = std::fs::read(path) {
-        hasher.update(&data);
+    // 流式读取，避免大文件（视频）整块载入内存
+    if let Ok(f) = std::fs::File::open(path) {
+        let mut reader = std::io::BufReader::with_capacity(256 * 1024, f);
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            match std::io::Read::read(&mut reader, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+            }
+        }
     }
     hasher
         .finalize()
@@ -438,7 +446,7 @@ fn import_eagle_item(
         None
     };
 
-    lib.conn.execute(
+    let inserted = lib.conn.execute(
         "INSERT OR IGNORE INTO items(id,name,ext,kind,size,width,height,duration,hash,phash,r,g,b,palette,
           rating,note,url,folder_id,source_path,added_at,created_at,thumb)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
@@ -470,6 +478,10 @@ fn import_eagle_item(
             if used_eagle_thumb { 1 } else { 0 },
         ],
     )?;
+    if inserted == 0 {
+        // 已存在（重复导入）→ 不重复计数
+        return Ok(());
+    }
 
     for t in &tags {
         if t.is_empty() {
@@ -493,3 +505,105 @@ fn import_eagle_item(
 }
 
 fn report_no_source(_m: &Value) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dhash_is_stable_and_order_sensitive() {
+        let a = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(64, 64, image::Rgb([120, 120, 120])));
+        let h1 = dhash_hex(&a);
+        let h2 = dhash_hex(&a);
+        assert_eq!(h1, h2, "同一图片哈希必须稳定");
+        assert_eq!(h1.len(), 16, "8x8 → 64bit → 16 hex");
+
+        // 左白右黑 vs 左黑右白 → 汉明距离应很大
+        let mut left_white = image::RgbImage::new(64, 64);
+        for (x, _, p) in left_white.enumerate_pixels_mut() {
+            *p = if x < 32 { image::Rgb([240, 240, 240]) } else { image::Rgb([10, 10, 10]) };
+        }
+        let mut right_white = image::RgbImage::new(64, 64);
+        for (x, _, p) in right_white.enumerate_pixels_mut() {
+            *p = if x < 32 { image::Rgb([10, 10, 10]) } else { image::Rgb([240, 240, 240]) };
+        }
+        let d = {
+            let x = u64::from_str_radix(&dhash_hex(&image::DynamicImage::ImageRgb8(left_white)), 16).unwrap();
+            let y = u64::from_str_radix(&dhash_hex(&image::DynamicImage::ImageRgb8(right_white)), 16).unwrap();
+            (x ^ y).count_ones()
+        };
+        assert!(d > 10, "镜像图应有低相似度，实际距离 {d}");
+    }
+
+    #[test]
+    fn kmeans_palette_returns_six_entries_and_dominant() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(32, 32, image::Rgb([200, 30, 30])));
+        let (palette, dom) = kmeans_palette(&img);
+        assert_eq!(palette.len(), 6);
+        assert_eq!(dom, (200, 30, 30), "纯色图主色应精确");
+        let weight_total: f64 = palette
+            .iter()
+            .map(|e| e["weight"].as_f64().unwrap_or(0.0))
+            .sum();
+        assert!((weight_total - 1.0).abs() < 1e-6, "权重和应为 1");
+    }
+
+    #[test]
+    fn import_eagle_builds_companion_library() {
+        // 构造一个最小 Eagle 库
+        let base = std::env::temp_dir().join(format!("lilium-eagle-{}", std::process::id()));
+        let eagle_root = base.join("Demo.library");
+        let info_dir = eagle_root.join("images").join("K0").join("KABC123.info");
+        std::fs::create_dir_all(&info_dir).unwrap();
+        std::fs::write(
+            eagle_root.join("metadata.json"),
+            r#"{"name":"DemoLib","folders":[{"id":"F1","name":"相册A"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(eagle_root.join("tags.json"), r##"[{"name":"风景","color":"#22c55e"}]"##).unwrap();
+
+        // 生成真实 PNG 与 .info 元数据
+        let img = image::RgbaImage::from_pixel(20, 10, image::Rgba([10, 20, 30, 255]));
+        let img_path = info_dir.join("KABC123.png");
+        img.save_with_format(&img_path, image::ImageFormat::Png).unwrap();
+        std::fs::write(
+            info_dir.join("metadata.json"),
+            r#"{"id":"KABC123","name":"测试图","ext":"png","size":100,"width":20,"height":10,"tags":["风景"],"star":3,"annotation":"备注","url":"https://example.com","palettes":[{"color":[10,20,30],"weight":1.0}]}"#,
+        )
+        .unwrap();
+
+        let lib_root = base.join("Demo.lilium");
+        std::fs::create_dir_all(lib_root.join("images")).unwrap();
+        std::fs::create_dir_all(lib_root.join("thumbnails")).unwrap();
+        let conn = crate::db::open_db(&lib_root.join("library.db")).unwrap();
+        let lib = Library { root: lib_root.clone(), conn };
+
+        let report = import_eagle_library(&lib, &eagle_root).unwrap();
+        assert_eq!((report.folders, report.items, report.tags), (1, 1, 1));
+
+        // 文件夹 / 标签 / 条目元数据完整迁移
+        let folders = lib.list_folders();
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].name, "相册A");
+        let tags = lib.list_tags();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].color, "#22c55e");
+        let item = lib.get_item("KABC123").expect("应沿用原 Eagle ID");
+        assert_eq!((item.name.as_str(), item.rating), ("测试图", 3));
+        assert_eq!(item.note, "备注");
+        assert_eq!(item.url, "https://example.com");
+        // get_item 不附带 tags → 直接查关联表
+        let n: i64 = lib
+            .conn
+            .query_row("SELECT COUNT(*) FROM item_tags WHERE item_id='KABC123' AND tag_id='风景'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!((item.width, item.height), (Some(20), Some(10)));
+        assert!(item.r.is_some(), "应从调色板提取主色");
+
+        // 幂等：重复导入不产生副本
+        let again = import_eagle_library(&lib, &eagle_root).unwrap();
+        assert_eq!(again.items, 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}
