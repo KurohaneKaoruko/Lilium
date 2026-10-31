@@ -165,7 +165,7 @@ fn parse_folders(v: &Value, errors: &mut Vec<String>) -> Vec<EagleFolder> {
     if let Some(arr) = v.as_array() {
         for f in arr {
             let id = f.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-            let name = f
+            let mut name = f
                 .get("name")
                 .and_then(|x| x.as_str())
                 .unwrap_or("未命名")
@@ -173,6 +173,9 @@ fn parse_folders(v: &Value, errors: &mut Vec<String>) -> Vec<EagleFolder> {
             if id.is_empty() {
                 errors.push(format!("文件夹缺少 id: {name}"));
                 continue;
+            }
+            if name.trim().is_empty() {
+                name = "未命名".to_string();
             }
             let children = parse_folders(f.get("children").unwrap_or(&Value::Null), errors);
             out.push(EagleFolder { id, name, children });
@@ -312,16 +315,23 @@ fn import_eagle_item(
     queue: &JobQueue,
 ) -> Result<(), anyhow::Error> {
     let id = m.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string();
-    if id.is_empty() {
-        return Err(anyhow::anyhow!("缺少 id"));
+    // id 至少 2 个字符：后续要按 id[0..2] 分桶存文件
+    if id.len() < 2 {
+        return Err(anyhow::anyhow!("缺少 id 或 id 过短"));
     }
     // 已导入过则跳过
     if lib.get_item(&id).is_some() {
         return Err(anyhow::anyhow!("已存在"));
     }
-    let ext = m.get("ext").and_then(|x| x.as_str()).unwrap_or("").to_lowercase();
-    if ext.is_empty() {
-        return Err(anyhow::anyhow!("缺少 ext"));
+    let ext = m
+        .get("ext")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    // 扩展名只允许字母数字：防路径穿越（如 "../../xxx"）与非法文件名
+    if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(anyhow::anyhow!("非法 ext: {ext:?}"));
     }
     let name = m
         .get("name")
@@ -407,8 +417,19 @@ fn import_eagle_item(
         palette_json = Some(serde_json::to_string(&pal).unwrap_or_default());
     }
 
-    // folder
-    let folder_id = m.get("folders").and_then(|x| x.as_array()).and_then(|a| a.first()).and_then(|f| f.as_str());
+    // folder：校验存在性（悬空引用会让条目在文件夹树里隐身）
+    let folder_id = m
+        .get("folders")
+        .and_then(|x| x.as_array())
+        .and_then(|a| a.first())
+        .and_then(|f| f.as_str())
+        .filter(|fid| {
+            let exists: i64 = lib
+                .conn
+                .query_row("SELECT COUNT(*) FROM folders WHERE id=?1", [fid], |r| r.get(0))
+                .unwrap_or(0);
+            exists > 0
+        });
 
     // ---- 文件 ----
     let src_file = info_dir.join(format!("{id}.{ext}"));
@@ -605,5 +626,81 @@ mod tests {
         let again = import_eagle_library(&lib, &eagle_root).unwrap();
         assert_eq!(again.items, 0);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 构造最小 Eagle 库骨架，返回 (Eagle 根目录, .info 目录)
+    fn eagle_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let base = std::env::temp_dir().join(format!("lilium-eagle-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let eagle_root = base.join("Demo.library");
+        let info_dir = eagle_root.join("images").join("K0").join("KDEF0000000000000001.info");
+        std::fs::create_dir_all(&info_dir).unwrap();
+        std::fs::write(eagle_root.join("metadata.json"), r#"{"name":"DemoLib"}"#).unwrap();
+        (eagle_root, info_dir)
+    }
+
+    #[test]
+    fn eagle_item_with_short_id_is_skipped_not_panic() {
+        // 回归：id 长度 < 2 时 id[0..2] 越界 panic 会打断整个导入
+        let (eagle_root, info_dir) = eagle_fixture("shortid");
+        std::fs::write(
+            info_dir.join("metadata.json"),
+            r#"{"id":"X","ext":"png"}"#,
+        )
+        .unwrap();
+        let lib = open_test_lib(&eagle_root);
+        let report = import_eagle_library(&lib, &eagle_root).unwrap();
+        assert_eq!(report.items, 0, "短 id 条目应被跳过");
+        assert_eq!(report.skipped, 1);
+        let _ = std::fs::remove_dir_all(lib.root.parent().unwrap());
+        let _ = std::fs::remove_dir_all(eagle_root.parent().unwrap());
+    }
+
+    #[test]
+    fn eagle_item_with_traversal_ext_is_rejected() {
+        // 回归：ext 未校验，"../evil" 之类会把文件复制出库目录
+        let (eagle_root, info_dir) = eagle_fixture("travext");
+        std::fs::write(
+            info_dir.join("metadata.json"),
+            r#"{"id":"KTRV0000000000000001","ext":"../../evil"}"#,
+        )
+        .unwrap();
+        let lib = open_test_lib(&eagle_root);
+        let report = import_eagle_library(&lib, &eagle_root).unwrap();
+        assert_eq!(report.items, 0, "非法 ext 条目应被拒绝");
+        assert!(!eagle_root.parent().unwrap().join("evil").exists(), "不得写出库目录");
+        let _ = std::fs::remove_dir_all(lib.root.parent().unwrap());
+        let _ = std::fs::remove_dir_all(eagle_root.parent().unwrap());
+    }
+
+    #[test]
+    fn eagle_item_with_dangling_folder_falls_back_to_unfiled() {
+        // 回归：metadata 引用不存在的 folder id → 条目在文件夹树里隐身
+        let (eagle_root, info_dir) = eagle_fixture("dangling");
+        let img_path = info_dir.join("KDEF0000000000000001.png");
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]))
+            .save_with_format(&img_path, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(
+            info_dir.join("metadata.json"),
+            r#"{"id":"KDEF0000000000000001","name":"d","ext":"png","folders":["GHOST_FOLDER"]}"#,
+        )
+        .unwrap();
+        let lib = open_test_lib(&eagle_root);
+        let report = import_eagle_library(&lib, &eagle_root).unwrap();
+        assert_eq!(report.items, 1);
+        let item = lib.get_item("KDEF0000000000000001").unwrap();
+        assert_eq!(item.folder_id, None, "悬空 folder 应回落为未分类");
+        let _ = std::fs::remove_dir_all(lib.root.parent().unwrap());
+        let _ = std::fs::remove_dir_all(eagle_root.parent().unwrap());
+    }
+
+    /// 测试专用：在 Eagle 库旁打开/创建伴生 .lilium 库
+    fn open_test_lib(eagle_root: &Path) -> Library {
+        let companion = crate::library::eagle_companion_path(eagle_root);
+        std::fs::create_dir_all(companion.join("images")).unwrap();
+        std::fs::create_dir_all(companion.join("thumbnails")).unwrap();
+        let conn = crate::db::open_db(&companion.join("library.db")).unwrap();
+        Library { root: companion, conn }
     }
 }

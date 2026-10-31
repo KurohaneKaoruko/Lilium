@@ -13,6 +13,7 @@ export default function DetailPanel() {
   const refreshMeta = useStore((s) => s.refreshMeta);
   const [exif, setExif] = useState<Exif | null>(null);
   const [path, setPath] = useState<string>("");
+  const [hash, setHash] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
   const [note, setNote] = useState("");
   const [noteTimer, setNoteTimer] = useState<ReturnType<typeof setTimeout> | null>(null);
@@ -23,10 +24,12 @@ export default function DetailPanel() {
   useEffect(() => {
     if (!detailId) return;
     setExif(null);
-    api<{ exif: Exif | null; path: string }>(`/items/${detailId}`)
+    setHash(null);
+    api<{ exif: Exif | null; path: string; hash?: string | null }>(`/items/${detailId}`)
       .then((d) => {
         setExif(d.exif);
         setPath(d.path);
+        setHash(d.hash ?? null);
       })
       .catch(() => {});
     const it = useStore.getState().items.find((i) => i.id === detailId);
@@ -159,7 +162,7 @@ export default function DetailPanel() {
           {item.duration ? <Row k="时长" v={`${Math.round(item.duration)}s`} /> : null}
           <Row k="添加于" v={fmtDate(item.addedAt)} />
           <Row k="创建于" v={fmtDate(item.createdAt)} />
-          {item.hash && <Row k="哈希" v={item.hash.slice(0, 12) + "…"} />}
+          {hash && <Row k="哈希" v={hash.slice(0, 12) + "…"} />}
         </div>
 
         {/* 色板 */}

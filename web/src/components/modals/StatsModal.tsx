@@ -28,7 +28,7 @@ function fmtSize(n: number): string {
 }
 
 const KIND_LABELS: Record<string, string> = {
-  image: "图片", video: "视频", audio: "音频", text: "文本", font: "字体", other: "其他",
+  image: "图片", video: "视频", audio: "音频", document: "文档", font: "字体", other: "其他",
 };
 
 /** 概览统计卡片 */

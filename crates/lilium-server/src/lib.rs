@@ -357,6 +357,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn item_detail_returns_hash_for_info_panel() {
+        // 回归：hash 在列表接口 skip_serializing 后，详情接口也没带出 → 前端「哈希」行永远为空
+        let (app, base) = test_app("detailhash");
+        let png = png_bytes(12, 12);
+        // multipart 上传真实文件
+        let boundary = "----liliumhash";
+        let mut body = format!(
+            "--{b}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"h.png\"\r\ncontent-type: image/png\r\n\r\n",
+            b = boundary
+        )
+        .into_bytes();
+        body.extend_from_slice(&png);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n", boundary = boundary).as_bytes());
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/upload")
+                    .header("content-type", format!("multipart/form-data; boundary={boundary}", boundary = boundary))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let up: Value = serde_json::from_slice(&bytes).unwrap();
+        let item_id = up["items"][0]["id"].as_str().unwrap().to_string();
+
+        let (_, detail) = get_json(app, &format!("/api/items/{item_id}")).await;
+        let hash = detail["hash"].as_str().expect("详情接口应返回 hash");
+        assert_eq!(hash.len(), 40, "SHA1 hex 长度应为 40");
+        assert!(detail["phash"].is_null() || detail["phash"].is_string());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
     async fn batch_move_to_missing_folder_is_400() {
         let (app, base) = test_app("movemiss");
         let (status, v) = post_json(

@@ -109,7 +109,7 @@ web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 ```bash
 # 构建与测试（Rust 侧）
 cargo build
-cargo test                     # 全部单元测试（core 26 + server 3）
+cargo test                     # 全部单元测试（core 31 + server 4）
 
 # 只构建 / 测试某个 crate
 cargo build -p lilium-core
@@ -161,8 +161,9 @@ REST API 挂载在 `/api` 前缀下（完整列表见 `crates/lilium-server/src/
 
 - 测试库/临时文件统一建立在系统临时目录，命名带进程 PID 隔离，测试结束自行清理
 - core 测试覆盖：库生命周期、文件夹树（含成环保护）、导入去重（路径级 + 内容级）、
-  回收站、批量操作、标签、智能文件夹、重复检测、查询过滤器与排序白名单
-- server 测试覆盖：API 契约（重命名文件夹回归、空 folderId 语义、非法目标 400）
+  回收站、批量操作、标签、智能文件夹、重复检测（精确 + dHash 带状索引聚类）、
+  查询过滤器与排序白名单、观察文件夹 autoImport 开关、Eagle 导入边界（短 id / 非法 ext / 悬空 folder）
+- server 测试覆盖：API 契约（重命名文件夹回归、空 folderId 语义、非法目标 400、详情接口返回哈希）
 
 ## 📋 系统要求
 

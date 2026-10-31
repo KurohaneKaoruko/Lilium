@@ -763,68 +763,119 @@ impl Library {
     // ---------- duplicates / stats ----------
 
     pub fn find_duplicates(&self) -> Vec<(String, Vec<Item>)> {
-        // 1) 完全相同 hash
         let mut groups: Vec<(String, Vec<Item>)> = vec![];
-        let mut stmt = self
-            .conn
-            .prepare(&format!(
-                "SELECT {} FROM items WHERE trash=0 AND hash IS NOT NULL ORDER BY hash, size",
-                query::ITEM_COLS
-            ))
-            .unwrap();
-        let items: Vec<Item> = stmt
-            .query_map([], crate::model::item_from_row)
-            .map(|rs| rs.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default();
-        let mut by_hash: std::collections::HashMap<String, Vec<Item>> = Default::default();
-        for it in &items {
-            if let Some(h) = &it.hash {
-                by_hash.entry(h.clone()).or_default().push(it.clone());
-            }
-        }
-        for (h, mut group) in by_hash {
+
+        // 1) 完全相同 hash：先用 SQL 聚合找出重复的 hash，再按 hash 取条目
+        //    （避免把全库条目连调色板 JSON 一起载入内存再建 HashMap）
+        let dup_hashes: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT hash FROM items WHERE trash=0 AND hash IS NOT NULL GROUP BY hash HAVING COUNT(*)>1")
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .map(|rs| rs.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+        };
+        for h in dup_hashes {
+            let mut group: Vec<Item> = {
+                let mut stmt = self
+                    .conn
+                    .prepare(&format!(
+                        "SELECT {} FROM items WHERE trash=0 AND hash=?1 ORDER BY size, id",
+                        query::ITEM_COLS
+                    ))
+                    .unwrap();
+                stmt.query_map([&h], crate::model::item_from_row)
+                    .map(|rs| rs.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                    .unwrap_or_default()
+            };
             if group.len() > 1 {
                 self.attach_tags(&mut group);
                 groups.push((format!("相同内容 {h}"), group));
             }
         }
 
-        // 2) 相似感知哈希（dHash 汉明距离 ≤ 6），跳过已按内容归组的条目
+        // 2) 相似感知哈希（dHash 汉明距离 ≤ 6），跳过已按内容归组的条目。
+        //    带状索引（LSH）：64bit 分 8 段 × 8bit，距离 ≤ 7 的图片对必然共享
+        //    至少一段完全相同 → 候选对只在共享段的桶内产生并做汉明校验，
+        //    大库从 O(n²) 全对比较降到近似线性；组内用并查集合并。
         let grouped: std::collections::HashSet<String> = groups
             .iter()
             .flat_map(|(_, g)| g.iter().map(|i| i.id.clone()))
             .collect();
-        let phashed: Vec<(u64, Item)> = items
-            .iter()
-            .filter(|it| !grouped.contains(&it.id))
-            .filter_map(|it| {
-                let v = it.phash.as_ref()?;
-                u64::from_str_radix(v, 16).ok().map(|u| (u, it.clone()))
-            })
-            .collect();
-        // 按汉明距离聚类（贪心：取首个未分组成员为种子）
-        let mut used = vec![false; phashed.len()];
-        for i in 0..phashed.len() {
-            if used[i] {
+        let phashed: Vec<(u64, Item)> = {
+            let mut stmt = self
+                .conn
+                .prepare(&format!(
+                    "SELECT {} FROM items WHERE trash=0 AND phash IS NOT NULL",
+                    query::ITEM_COLS
+                ))
+                .unwrap();
+            stmt.query_map([], crate::model::item_from_row)
+                .map(|rs| rs.filter_map(|r| r.ok()).collect::<Vec<Item>>())
+                .unwrap_or_default()
+        }
+        .into_iter()
+        .filter(|it| !grouped.contains(&it.id))
+        .filter_map(|it| {
+            let v = it.phash.as_ref()?;
+            u64::from_str_radix(v, 16).ok().map(|u| (u, it))
+        })
+        .collect();
+
+        fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+
+        let n = phashed.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut bands: std::collections::HashMap<(usize, u16), Vec<usize>> = Default::default();
+        for (i, (u, _)) in phashed.iter().enumerate() {
+            for b in 0..8usize {
+                bands.entry((b, ((u >> (b * 8)) & 0xFF) as u16)).or_default().push(i);
+            }
+        }
+        for bucket in bands.into_values() {
+            if bucket.len() < 2 {
                 continue;
             }
-            let (seed, _) = phashed[i];
-            let mut group = vec![phashed[i].1.clone()];
-            used[i] = true;
-            for j in (i + 1)..phashed.len() {
-                if used[j] {
-                    continue;
-                }
-                let (u, _) = phashed[j];
-                if (u ^ seed).count_ones() <= 6 {
-                    group.push(phashed[j].1.clone());
-                    used[j] = true;
+            for a in 0..bucket.len() {
+                for b in (a + 1)..bucket.len() {
+                    let (ia, ib) = (bucket[a], bucket[b]);
+                    if (phashed[ia].0 ^ phashed[ib].0).count_ones() <= 6 {
+                        let ra = find(&mut parent, ia);
+                        let rb = find(&mut parent, ib);
+                        if ra != rb {
+                            parent[rb] = ra;
+                        }
+                    }
                 }
             }
-            if group.len() > 1 {
-                self.attach_tags(&mut group);
-                groups.push(("相似图片 (dHash)".into(), group));
+        }
+
+        let mut clusters: Vec<Vec<usize>> = Vec::with_capacity(n / 2 + 1);
+        let mut by_root: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+        for i in 0..n {
+            let r = find(&mut parent, i);
+            by_root.entry(r).or_default().push(i);
+        }
+        for mut c in by_root.into_values() {
+            if c.len() < 2 {
+                continue;
             }
+            c.sort();
+            clusters.push(c);
+        }
+        // 按最小下标排序，保证分组顺序稳定（与旧实现的种子顺序一致）
+        clusters.sort_by_key(|c| c[0]);
+        for cluster in clusters {
+            let mut group: Vec<Item> = cluster.into_iter().map(|i| phashed[i].1.clone()).collect();
+            self.attach_tags(&mut group);
+            groups.push(("相似图片 (dHash)".into(), group));
         }
         groups
     }
@@ -833,13 +884,31 @@ impl Library {
         let Some(me) = self.get_item(id) else { return vec![] };
         let Some(ph) = &me.phash else { return vec![] };
         let target = u64::from_str_radix(ph, 16).unwrap_or(0);
-        let mut stmt = self
-            .conn
-            .prepare(&format!(
-                "SELECT {} FROM items WHERE trash=0 AND phash IS NOT NULL AND id != ?1",
-                query::ITEM_COLS
-            ))
-            .unwrap();
+        // 带状索引剪枝（鸽笼原理）：64bit 分 8 段，若总距离 ≤ 10，则必有
+        // 至少一段的距离 ≤ ⌊10/8⌋ = 1，即该段字节等于目标字节或与其差 1 个 bit。
+        // 每段枚举 9 个合法字节（原值 + 8 个单 bit 翻转），SQL 先筛出超集，
+        // 再在 Rust 里做精确汉明校验，避免全表载入。
+        let byte_hex = |v: u8| format!("{v:02x}");
+        let mut cond = String::new();
+        for b in 0..8usize {
+            let t = ((target >> (b * 8)) & 0xFF) as u8;
+            // phash 是 16 位 hex（高位在前），第 b 段（从低位数）对应 substr 起点 15-2b
+            let pos = 15 - 2 * b;
+            if b > 0 {
+                cond.push_str(" OR ");
+            }
+            let variants: Vec<String> = (0..8u32)
+                .map(|i| byte_hex(t ^ (1 << i)))
+                .chain(std::iter::once(byte_hex(t)))
+                .map(|h| format!("'{h}'"))
+                .collect();
+            cond.push_str(&format!("substr(phash, {pos}, 2) IN ({})", variants.join(",")));
+        }
+        let sql = format!(
+            "SELECT {} FROM items WHERE trash=0 AND phash IS NOT NULL AND id != ?1 AND ({cond})",
+            query::ITEM_COLS
+        );
+        let mut stmt = self.conn.prepare(&sql).unwrap();
         let cands: Vec<Item> = stmt
             .query_map([id], crate::model::item_from_row)
             .map(|rs| rs.filter_map(|r| r.ok()).collect())
@@ -924,9 +993,14 @@ impl Library {
         Ok(())
     }
 
-    /// 扫描观察文件夹并导入新文件；返回导入数量
+    /// 扫描观察文件夹并导入新文件；返回导入数量。
+    /// `autoImport=false` 时跳过（返回 0），定时任务与手动扫描共用本入口。
     pub fn scan_watch_folders(&self, queue: &jobs::JobQueue) -> Result<usize, anyhow::Error> {
-        let folders = self.settings_get_all().get("watchFolders").cloned().unwrap_or(json!([]));
+        let settings = self.settings_get_all();
+        if settings.get("autoImport").and_then(|v| v.as_bool()) == Some(false) {
+            return Ok(0);
+        }
+        let folders = settings.get("watchFolders").cloned().unwrap_or(json!([]));
         let mut paths = vec![];
         if let Some(arr) = folders.as_array() {
             for f in arr {
@@ -1238,6 +1312,70 @@ mod tests {
 
         let _ = std::fs::remove_file(&s1);
         let _ = std::fs::remove_file(&s2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dhash_similarity_clusters_and_ignores_far_pairs() {
+        let (lib, dir) = temp_lib("simgrp");
+        // 构造 3 张互相相似（距离 ≤ 2）的图 + 1 张全 bit 翻转的不相似图
+        let base: u64 = 0b1011_0100_1100_0110u64 << 48;
+        let near2 = base ^ (1 << 40); // 距离 1
+        let near3 = base ^ (0b11 << 20); // 距离 2
+        let far = !base; // 距离 64
+        for (id, ph) in [
+            ("SIM000000000000000001", base),
+            ("SIM000000000000000002", near2),
+            ("SIM000000000000000003", near3),
+            ("SIM000000000000000004", far),
+        ] {
+            lib.conn
+                .execute(
+                    "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                     VALUES(?1,'x.png','png','image',1,?2,0,0)",
+                    rusqlite::params![id, format!("{ph:016x}")],
+                )
+                .unwrap();
+        }
+        let groups = lib.find_duplicates();
+        let similar: Vec<&Vec<crate::model::Item>> = groups
+            .iter()
+            .filter(|(r, _)| r.starts_with("相似图片"))
+            .map(|(_, g)| g)
+            .collect();
+        assert_eq!(similar.len(), 1, "相似条目应聚类成一组: {similar:?}");
+        let ids: Vec<&str> = similar[0].iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids.len(), 3, "3 张相似图应聚成一组，远距离图不参与: {ids:?}");
+        assert!(ids.contains(&"SIM000000000000000001"));
+        assert!(ids.contains(&"SIM000000000000000002"));
+        assert!(ids.contains(&"SIM000000000000000003"));
+        assert!(!ids.contains(&"SIM000000000000000004"));
+
+        // similar_to：以 base 为基准，应召回 2 张近邻、排除远距离图
+        let sim = lib.similar_to("SIM000000000000000001");
+        assert_eq!(sim.len(), 2, "带状索引剪枝不得漏召回近邻: {sim:?}");
+        assert!(sim.iter().all(|i| i.id != "SIM000000000000000004"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn auto_import_off_disables_watch_scan() {
+        let (lib, dir) = temp_lib("watchoff");
+        let (queue, _rx) = JobQueue::new();
+        let watch = dir.parent().unwrap().join(format!("watch-src-{}", std::process::id()));
+        std::fs::create_dir_all(&watch).unwrap();
+        let src = test_png(&watch, "w.png", 16, 16, [1, 2, 3]);
+        lib.settings_set("watchFolders", &serde_json::json!([watch.to_string_lossy()])).unwrap();
+        lib.settings_set("autoImport", &serde_json::json!(false)).unwrap();
+
+        let n = lib.scan_watch_folders(&queue).unwrap();
+        assert_eq!(n, 0, "autoImport=false 时不得导入");
+
+        lib.settings_set("autoImport", &serde_json::json!(true)).unwrap();
+        let n = lib.scan_watch_folders(&queue).unwrap();
+        assert_eq!(n, 1, "autoImport=true 时应导入观察文件夹");
+        assert!(src.exists(), "观察导入不移动源文件");
+        let _ = std::fs::remove_dir_all(&watch);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

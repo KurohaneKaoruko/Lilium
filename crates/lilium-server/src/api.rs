@@ -354,10 +354,20 @@ async fn item_detail(State(state): State<ArcState>, UrlPath(id): UrlPath<String>
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(Value::Null);
         let path = lib.item_file_path(&id).map(|p| p.to_string_lossy().to_string());
+        // hash/phash 在列表接口被 skip_serializing（缩小分页载荷），
+        // 详情接口单独带出，供详情面板「哈希」行展示
+        let (hash, phash): (Option<String>, Option<String>) = lib
+            .conn
+            .query_row("SELECT hash, phash FROM items WHERE id=?1", [&id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap_or((None, None));
         Ok(Json(json!({
             "item": item,
             "exif": exif,
             "path": path,
+            "hash": hash,
+            "phash": phash,
         }))
         .into_response())
     })
