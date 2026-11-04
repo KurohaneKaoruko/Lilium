@@ -248,7 +248,7 @@ pub fn import_eagle_library(
                     ),
                     _ => continue,
                 };
-                if name.is_empty() {
+                if name.trim().is_empty() {
                     continue;
                 }
                 if lib

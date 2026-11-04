@@ -324,6 +324,9 @@ impl Library {
     }
 
     pub fn create_folder(&self, parent_id: Option<&str>, name: &str) -> Result<Folder, anyhow::Error> {
+        if name.trim().is_empty() {
+            return Err(anyhow::anyhow!("文件夹名不能为空"));
+        }
         let id = crate::jobs::new_id();
         let pos: i64 = self.conn.query_row(
             "SELECT COALESCE(MAX(position),0)+1 FROM folders WHERE parent_id IS ?1",
@@ -355,6 +358,9 @@ impl Library {
     }
 
     pub fn rename_folder(&self, id: &str, name: &str) -> Result<(), anyhow::Error> {
+        if name.trim().is_empty() {
+            return Err(anyhow::anyhow!("文件夹名不能为空"));
+        }
         self.conn.execute("UPDATE folders SET name=?1 WHERE id=?2", params![name.trim(), id])?;
         Ok(())
     }
@@ -408,15 +414,22 @@ impl Library {
     }
 
     pub fn create_tag(&self, name: &str, color: &str) -> Result<(), anyhow::Error> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(anyhow::anyhow!("标签名不能为空"));
+        }
         self.conn.execute(
             "INSERT INTO tags(name, color, created_at) VALUES(?1,?2,?3)
              ON CONFLICT(name) DO UPDATE SET color=excluded.color",
-            params![name.trim(), color, crate::jobs::now_ms()],
+            params![name, color, crate::jobs::now_ms()],
         )?;
         Ok(())
     }
 
     pub fn rename_tag(&self, old: &str, new: &str, color: Option<&str>) -> Result<(), anyhow::Error> {
+        if new.trim().is_empty() {
+            return Err(anyhow::anyhow!("标签名不能为空"));
+        }
         if new != old {
             self.conn.execute("UPDATE tags SET name=?1 WHERE name=?2", params![new.trim(), old])?;
             self.conn.execute("UPDATE item_tags SET tag_id=?1 WHERE tag_id=?2", params![new.trim(), old])?;
@@ -455,6 +468,9 @@ impl Library {
     }
 
     pub fn create_smart_folder(&self, name: &str, query: &serde_json::Value) -> Result<SmartFolder, anyhow::Error> {
+        if name.trim().is_empty() {
+            return Err(anyhow::anyhow!("智能文件夹名不能为空"));
+        }
         let id = crate::jobs::new_id();
         let q = serde_json::to_string(query)?;
         self.conn.execute(
@@ -466,6 +482,9 @@ impl Library {
     }
 
     pub fn update_smart_folder(&self, id: &str, name: &str, query: &serde_json::Value) -> Result<(), anyhow::Error> {
+        if name.trim().is_empty() {
+            return Err(anyhow::anyhow!("智能文件夹名不能为空"));
+        }
         self.conn.execute(
             "UPDATE smart_folders SET name=?1, query=?2 WHERE id=?3",
             params![name.trim(), serde_json::to_string(query)?, id],
@@ -1230,6 +1249,34 @@ mod tests {
         assert_eq!(all[0].query["ratingMin"], 4);
         lib.delete_smart_folder(&sf.id).unwrap();
         assert!(lib.list_smart_folders().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blank_names_are_rejected() {
+        let (lib, dir) = temp_lib("blank");
+        // 标签：创建与重命名都拒绝空白名（此前纯空格会入库成不可见的空名标签）
+        assert!(lib.create_tag("   ", "#8b5cf6").is_err());
+        assert!(lib.list_tags().is_empty());
+        lib.create_tag("t1", "#8b5cf6").unwrap();
+        assert!(lib.rename_tag("t1", "  ", None).is_err());
+        assert_eq!(lib.list_tags()[0].name, "t1", "重命名失败时原名应保留");
+
+        // 文件夹：创建与重命名都拒绝空白名
+        assert!(lib.create_folder(None, "   ").is_err());
+        assert!(lib.list_folders().is_empty());
+        let f = lib.create_folder(None, "f1").unwrap();
+        assert!(lib.rename_folder(&f.id, "   ").is_err());
+        assert_eq!(lib.list_folders()[0].name, "f1");
+
+        // 智能文件夹：创建与更新都拒绝空白名
+        let q = serde_json::json!({ "ratingMin": 1 });
+        assert!(lib.create_smart_folder("  ", &q).is_err());
+        assert!(lib.list_smart_folders().is_empty());
+        let sf = lib.create_smart_folder("s1", &q).unwrap();
+        assert!(lib.update_smart_folder(&sf.id, " ", &q).is_err());
+        assert_eq!(lib.list_smart_folders()[0].name, "s1");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
