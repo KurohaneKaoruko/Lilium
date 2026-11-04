@@ -755,9 +755,17 @@ impl Library {
     }
 
     /// 批量重命名，支持 {name} {index} {ext} {date} {w} {h}
+    ///
+    /// 模式不含 {index}（或多文件展开同名）时可能碰撞：自动追加 ` (2)`、` (3)` …
+    /// 直到唯一。判定范围 = 库内已有名称 ∪ 本批次已用名称。
     pub fn batch_rename(&self, ids: &[String], pattern: &str) -> Result<Vec<(String, String)>, anyhow::Error> {
         let tx = self.conn.unchecked_transaction()?;
         let mut out = vec![];
+        let mut taken: std::collections::HashSet<String> = {
+            let mut stmt = self.conn.prepare("SELECT name FROM items")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
         for (i, id) in ids.iter().enumerate() {
             if let Some(item) = self.get_item(id) {
                 let stem = std::path::Path::new(&item.name)
@@ -765,13 +773,14 @@ impl Library {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or(item.name.clone());
                 let date = chrono_fmt(item.added_at);
-                let new_name = pattern
+                let candidate = pattern
                     .replace("{name}", &stem)
                     .replace("{index}", &format!("{:03}", i + 1))
                     .replace("{ext}", &item.ext)
                     .replace("{date}", &date)
                     .replace("{w}", &item.width.unwrap_or(0).to_string())
                     .replace("{h}", &item.height.unwrap_or(0).to_string());
+                let new_name = dedupe_name(&candidate, &mut taken);
                 tx.execute("UPDATE items SET name=?1 WHERE id=?2", params![new_name, id])?;
                 out.push((id.clone(), new_name));
             }
@@ -1038,6 +1047,29 @@ impl Library {
     }
 }
 
+/// 重命名去重：`candidate` 与 `taken` 中已有名称冲突时，追加 ` (2)`、` (3)` …
+/// 直到唯一；确定的结果写回 `taken`，保证同批次内后续条目也能看到。
+fn dedupe_name(candidate: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    if taken.insert(candidate.to_string()) {
+        return candidate.to_string();
+    }
+    let (stem, dot_ext) = match candidate.rsplit_once('.') {
+        // 点后无字符或超长视为名字一部分（与 file_stem 的保守处理一致）
+        Some((s, e)) if !e.is_empty() && e.len() <= 8 && !e.contains(' ') => (s, Some(e)),
+        _ => (candidate, None),
+    };
+    for n in 2.. {
+        let name = match dot_ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{candidate} ({n})"),
+        };
+        if taken.insert(name.clone()) {
+            return name;
+        }
+    }
+    unreachable!()
+}
+
 fn chrono_fmt(ms: i64) -> String {
     // yyyyMMdd（无需外部 chrono 依赖，简单实现日期换算）
     let secs = ms / 1000;
@@ -1235,6 +1267,66 @@ mod tests {
         assert_eq!(lib.get_item(&item.id).unwrap().folder_id, None);
 
         let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_rename_dedupes_pattern_collisions() {
+        let (lib, dir) = temp_lib("rename");
+        let (queue, _rx) = JobQueue::new();
+        let tmp = std::env::temp_dir().join(format!("lilium-rn-{}.png", std::process::id()));
+        // 不同尺寸 → 内容不同 → 导入互不去重，得到 3 个独立条目
+        let srcs: Vec<_> = [(16u32, 16u32), (24, 24), (32, 32)]
+            .into_iter()
+            .map(|(w, h)| {
+                let p = std::env::temp_dir().join(format!("lilium-rn-{}-{}x{}.png", std::process::id(), w, h));
+                test_png(std::env::temp_dir().as_path(), &p.file_name().unwrap().to_string_lossy(), w, h, [200, 10, 10])
+            })
+            .collect();
+        let mut ids = vec![];
+        for src in &srcs {
+            let (it, _) = import::ingest_file(&lib, src, None, None, &queue).unwrap();
+            ids.push(it.id);
+        }
+        // 统一改成同名 → 模拟「多文件同名」的碰撞前提
+        for id in &ids {
+            lib.update_item(id, &import::ItemPatch { name: Some("photo.png".into()), ..Default::default() }).unwrap();
+        }
+        // 固定模式（不含 {index}）→ 必然碰撞
+        let out = lib.batch_rename(&ids, "photo").unwrap();
+        assert_eq!(out.len(), 3, "存在的条目都应出现在结果里");
+        assert_eq!(out[0].1, "photo", "第一个条目拿到原始候选名");
+        assert_eq!(out[1].1, "photo (2)", "第二个条目追加序号去重");
+        assert_eq!(out[2].1, "photo (3)", "第三个条目继续追加序号");
+        // 库内三条名称互不相同
+        let names: std::collections::BTreeSet<_> = out.iter().map(|(_, n)| n.clone()).collect();
+        assert_eq!(names.len(), 3);
+
+        // 扩展名保留：带 {ext} 的模式碰撞时序号插在扩展名之前
+        let out2 = lib.batch_rename(&ids, "pic.{ext}").unwrap();
+        assert_eq!((out2[0].1.as_str(), out2[1].1.as_str(), out2[2].1.as_str()), ("pic.png", "pic (2).png", "pic (3).png"));
+
+        // 与库内既有名称冲突：库外条目已占用「solo」→ 批次内改为 solo (2)、solo (3)
+        let src4 = test_png(std::env::temp_dir().as_path(), &format!("lilium-rn-{}-40.png", std::process::id()), 40, 40, [10, 200, 200]);
+        let (solo, _) = import::ingest_file(&lib, &src4, None, None, &queue).unwrap();
+        assert_ne!(solo.id, ids[0], "不同内容文件应生成独立条目");
+        lib.update_item(&solo.id, &import::ItemPatch { name: Some("solo".into()), ..Default::default() }).unwrap();
+        let rest: Vec<String> = ids.iter().take(2).cloned().collect();
+        let out3 = lib.batch_rename(&rest, "solo").unwrap();
+        assert_eq!((out3[0].1.as_str(), out3[1].1.as_str()), ("solo (2)", "solo (3)"), "候选名 solo 已被库内条目占用");
+        assert_eq!(lib.get_item(&solo.id).unwrap().name, "solo", "占用者不被改名");
+
+        // 无碰撞的正常路径不受影响：{index} 保证唯一时不追加序号
+        let out4 = lib.batch_rename(&ids, "n{index}").unwrap();
+        assert_eq!(out4.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>(), ["n001", "n002", "n003"]);
+
+        // 不存在的 id 静默跳过（与既有行为一致）
+        let out5 = lib.batch_rename(&["NOPE00000000000000001".into()], "p").unwrap();
+        assert!(out5.is_empty());
+
+        for src in srcs.iter().chain(std::iter::once(&src4)) {
+            let _ = std::fs::remove_file(src);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
