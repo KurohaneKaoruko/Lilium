@@ -1,0 +1,53 @@
+# 测试工作流:PR / push 到 main 触发,跑前端构建(tsc 类型检查 + vite 打包)与 Rust 全量测试
+#
+# 与 release.yml 保持一致的 runner / toolchain 版本;
+# src-tauri 属于 workspace 成员,编译 Tauri 需要 WebKitGTK 系统库。
+
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    name: 测试 (ubuntu-22.04)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          prefix-key: test
+
+      # 编译 src-tauri 需要 WebView2/WebKitGTK 开发库(与 release.yml 一致,少装 AppImage 专用的 libfuse2)
+      - name: 安装 Linux 依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: 安装前端依赖
+        working-directory: web
+        run: npm ci || npm install
+
+      - name: 构建前端(tsc 类型检查 + vite 打包)
+        working-directory: web
+        run: npm run build
+
+      - name: Rust 全量测试
+        run: cargo test --workspace
