@@ -746,7 +746,8 @@ impl Library {
     pub fn batch_purge(&self, ids: &[String]) -> Result<usize, anyhow::Error> {
         let mut n = 0;
         for id in ids {
-            if self.purge_item(id).is_ok() {
+            // 只统计真实删除（条目存在且事务提交成功），避免把不存在的 id 也计入 affected
+            if self.get_item(id).is_some() && self.purge_item(id).is_ok() {
                 n += 1;
             }
         }
@@ -1402,6 +1403,108 @@ mod tests {
         let sim = lib.similar_to("SIM000000000000000001");
         assert_eq!(sim.len(), 2, "带状索引剪枝不得漏召回近邻: {sim:?}");
         assert!(sim.iter().all(|i| i.id != "SIM000000000000000004"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicates_edge_cases_empty_single_no_phash() {
+        // 空库：不 panic、无分组
+        let (lib, dir) = temp_lib("dupempty");
+        assert!(lib.find_duplicates().is_empty(), "空库不应产生分组");
+        assert!(lib.similar_to("任意id").is_empty(), "不存在条目的相似查询应为空");
+
+        // 单图（含 phash）：自成一组不可能出现，无相似对
+        lib.conn
+            .execute(
+                "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                 VALUES('ONE0000000000000000001','a.png','png','image',1,'0123456789abcdef',0,0)",
+                [],
+            )
+            .unwrap();
+        assert!(lib.find_duplicates().is_empty(), "单图不应产生分组");
+        assert!(lib.similar_to("ONE0000000000000000001").is_empty());
+
+        // 两张完全相同 phash：应聚成一组（LSH 桶内距离 0）
+        lib.conn
+            .execute(
+                "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                 VALUES('ONE0000000000000000002','b.png','png','image',1,'0123456789abcdef',0,0)",
+                [],
+            )
+            .unwrap();
+        let groups = lib.find_duplicates();
+        let similar: Vec<&Vec<crate::model::Item>> = groups
+            .iter()
+            .filter(|(r, _)| r.starts_with("相似图片"))
+            .map(|(_, g)| g)
+            .collect();
+        assert_eq!(similar.len(), 1, "相同 phash 两图应聚成一组: {groups:?}");
+        assert_eq!(similar[0].len(), 2);
+
+        // 无 phash / 非法 hex 条目：应被安全跳过，不 panic、不误报
+        lib.conn
+            .execute(
+                "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                 VALUES('ONE0000000000000000003','c.png','png','image',1,NULL,0,0)",
+                [],
+            )
+            .unwrap();
+        lib.conn
+            .execute(
+                "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                 VALUES('ONE0000000000000000004','d.png','png','image',1,'zz-nothex!!',0,0)",
+                [],
+            )
+            .unwrap();
+        let groups = lib.find_duplicates();
+        assert!(
+            groups.iter().all(|(r, g)| !r.starts_with("相似图片") || g.iter().all(|i| i.id != "ONE0000000000000000004")),
+            "非法 hex 条目不得进入相似组: {groups:?}"
+        );
+        assert!(lib.similar_to("ONE0000000000000000004").is_empty(), "自身 phash 非法时应返回空");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lsh_threshold_boundaries() {
+        let (lib, dir) = temp_lib("dupthresh");
+        let mk = |lib: &Library, id: &str, ph: u64| {
+            lib.conn
+                .execute(
+                    "INSERT INTO items(id,name,ext,kind,size,phash,added_at,created_at)
+                     VALUES(?1,'x.png','png','image',1,?2,0,0)",
+                    rusqlite::params![id, format!("{ph:016x}")],
+                )
+                .unwrap();
+        };
+        let base: u64 = 0x0123_4567_89ab_cdef;
+
+        // 分组阈值边界：距离 6 → 同组；距离 7 → 不同组
+        mk(&lib, "THR000000000000000001", base);
+        mk(&lib, "THR000000000000000002", base ^ 0b111111); // 距离 6
+        mk(&lib, "THR000000000000000003", base ^ (0b1111111 << 20)); // 距离 7
+        let groups = lib.find_duplicates();
+        let similar: Vec<&Vec<crate::model::Item>> = groups
+            .iter()
+            .filter(|(r, _)| r.starts_with("相似图片"))
+            .map(|(_, g)| g)
+            .collect();
+        assert_eq!(similar.len(), 1, "距离 6 应成组，距离 7 不应: {similar:?}");
+        let ids: Vec<&str> = similar[0].iter().map(|i| i.id.as_str()).collect();
+        assert!(ids.contains(&"THR000000000000000001") && ids.contains(&"THR000000000000000002"));
+        assert!(!ids.contains(&"THR000000000000000003"), "距离 7 超出分组阈值 6: {ids:?}");
+
+        // 回收阈值边界（similar_to ≤ 10）：距离 10 → 召回；距离 11 → 不召回
+        lib.conn.execute("DELETE FROM items WHERE 1=1", []).unwrap();
+        mk(&lib, "THR000000000000000001", base);
+        mk(&lib, "THR000000000000000002", base ^ (0b11_1111_1111)); // 距离 10
+        mk(&lib, "THR000000000000000003", base ^ (0b111_1111_1111 << 8)); // 距离 11
+        let sim = lib.similar_to("THR000000000000000001");
+        let sim_ids: Vec<&str> = sim.iter().map(|i| i.id.as_str()).collect();
+        assert!(
+            sim_ids.contains(&"THR000000000000000002") && !sim_ids.contains(&"THR000000000000000003"),
+            "距离 10 应召回、距离 11 不应: {sim_ids:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
