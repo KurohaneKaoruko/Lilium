@@ -828,6 +828,13 @@ impl Library {
         //    带状索引（LSH）：64bit 分 8 段 × 8bit，距离 ≤ 7 的图片对必然共享
         //    至少一段完全相同 → 候选对只在共享段的桶内产生并做汉明校验，
         //    大库从 O(n²) 全对比较降到近似线性；组内用并查集合并。
+        //
+        //    【阈值说明】分组用 ≤ 6 而全库相似搜索 similar_to 用 ≤ 10：
+        //    分组是自动批量聚合，阈值过松会把「同一场景连拍」以外的大量弱相关图
+        //    吸进同一组，组会越滚越大（并查集传递合并），结果难读；≤ 6 只聚
+        //    「肉眼几乎相同」的图，宁可漏不可滥。similar_to 是用户对单张图主动
+        //    发起检索，召回优先，≤ 10 覆盖同构图 / 裁剪 / 轻度调色的近邻，
+        //    由用户自己判断结果相关性。两者语义不同，阈值不应统一。
         let grouped: std::collections::HashSet<String> = groups
             .iter()
             .flat_map(|(_, g)| g.iter().map(|i| i.id.clone()))
@@ -913,6 +920,8 @@ impl Library {
         let Some(me) = self.get_item(id) else { return vec![] };
         let Some(ph) = &me.phash else { return vec![] };
         let target = u64::from_str_radix(ph, 16).unwrap_or(0);
+        // 阈值 ≤ 10：主动检索、召回优先（与 find_duplicates 自动分组的 ≤ 6
+        // 语义不同，详见 find_duplicates 内的【阈值说明】）。
         // 带状索引剪枝（鸽笼原理）：64bit 分 8 段，若总距离 ≤ 10，则必有
         // 至少一段的距离 ≤ ⌊10/8⌋ = 1，即该段字节等于目标字节或与其差 1 个 bit。
         // 每段枚举 9 个合法字节（原值 + 8 个单 bit 翻转），SQL 先筛出超集，

@@ -101,6 +101,9 @@ web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 
 - 库结构：`MyLib.lilium/library.db (SQLite) + images/xx/<id>.<ext> + thumbnails/xx/<id>.jpg`
 - 条目 ID 为 20 位大写字母数字，导入已有库条目时**沿用原 ID**，可重复导入不产生副本
+- 重复检测两档阈值：**自动分组** `find_duplicates` 用 dHash 汉明距离 ≤ 6（只聚肉眼几乎相同的图，宁缺毋滥）；
+  **相似搜索** `similar_to` 用 ≤ 10（用户主动检索、召回优先，覆盖同构图 / 裁剪 / 轻度调色）。
+  相似查询走 `(hash) WHERE trash=0` 部分索引；schema 每次启动幂等执行（`CREATE ... IF NOT EXISTS`），旧库自动补建索引，无需迁移脚本
 
 ## 🛠️ 开发说明
 
