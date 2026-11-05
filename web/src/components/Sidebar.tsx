@@ -3,7 +3,7 @@ import {
   ChevronRight, Folder as FolderIcon, FolderOpen, FolderPlus, Image, Star, Trash2,
   Tags, Palette, X, Bookmark, Pencil, Inbox, Film, Music, FileText, Type as TypeIcon, RefreshCw,
 } from "lucide-react";
-import { useStore, type Filters } from "../store/useStore";
+import { filtersFromQuery, useStore, type Filters } from "../store/useStore";
 import { api, type Folder, type SmartFolder } from "../api/client";
 import humanSize from "../lib/human";
 import LibraryPanel from "./LibraryPanel";
@@ -282,8 +282,8 @@ export default function Sidebar({ immersive = false, collapsed = false }: { imme
                     filters.smartId === sf.id ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
                   }`}
                   onClick={() => {
-                    useStore.setState({ filters: { ...useStore.getState().filters, ...(sf.query as Partial<Filters>), smartId: sf.id } });
-                    useStore.getState().fetchItems();
+                    const st = useStore.getState();
+                    st.setFilters({ ...st.filters, ...filtersFromQuery(sf.query), smartId: sf.id });
                   }}
                 >
                   <Bookmark size={13} className="text-amber-400/80 shrink-0" />

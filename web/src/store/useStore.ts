@@ -10,6 +10,8 @@ export interface Filters {
   tag: string | null;
   kinds: string[];
   ratingMin: number;
+  /** 评分上限（0/5 = 不设上界） */
+  ratingMax: number;
   color: string | null;
   colorTolerance: number;
   q: string;
@@ -17,6 +19,14 @@ export interface Filters {
   smartId: string | null;
   untagged: boolean;
   unfiled: boolean;
+  /** 添加时间区间（毫秒时间戳，含边界；0 = 不设界） */
+  addedFrom: number;
+  addedTo: number;
+  /** 拍摄/创建时间区间（毫秒时间戳，含边界；0 = 不设界） */
+  createdFrom: number;
+  createdTo: number;
+  /** 否定标签：排除含任一这些标签的条目 */
+  notTags: string[];
 }
 
 interface State {
@@ -75,6 +85,7 @@ export const defaultFilters: Filters = {
   tag: null,
   kinds: [],
   ratingMin: 0,
+  ratingMax: 0,
   color: null,
   colorTolerance: 60,
   q: "",
@@ -82,7 +93,49 @@ export const defaultFilters: Filters = {
   smartId: null,
   untagged: false,
   unfiled: false,
+  addedFrom: 0,
+  addedTo: 0,
+  createdFrom: 0,
+  createdTo: 0,
+  notTags: [],
 };
+
+/**
+ * 应用智能文件夹保存的查询到当前筛选（保持筛选器其余部分不动）。
+ * 旧库 query JSON 缺少新字段时回落默认值（不迁移、不报错、未知字段忽略）——
+ * 保证「旧智能文件夹点开后」不会带上上次会话遗留的新字段值。
+ */
+export function filtersFromQuery(query: Record<string, unknown> | null | undefined): Partial<Filters> {
+  const q = (query ?? {}) as Record<string, unknown>;
+  const num = (v: unknown): number => {
+    const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+    return Number.isFinite(n) ? n : 0;
+  };
+  const strArr = (v: unknown): string[] => {
+    if (typeof v === "string") return v.split(",").map((s) => s.trim()).filter(Boolean);
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+    return [];
+  };
+  return {
+    folderId: typeof q.folderId === "string" && q.folderId ? q.folderId : null,
+    recursive: q.recursive === undefined ? true : Boolean(q.recursive),
+    tag: typeof q.tag === "string" && q.tag ? q.tag : null,
+    kinds: strArr(q.kinds),
+    ratingMin: Math.min(5, Math.max(0, num(q.ratingMin))),
+    ratingMax: Math.min(5, Math.max(0, num(q.ratingMax))),
+    color: typeof q.color === "string" && q.color ? q.color : null,
+    colorTolerance: num(q.colorTolerance) || 60,
+    q: typeof q.q === "string" ? q.q : "",
+    trash: Boolean(q.trash),
+    untagged: Boolean(q.untagged),
+    unfiled: Boolean(q.unfiled),
+    addedFrom: num(q.addedFrom),
+    addedTo: num(q.addedTo),
+    createdFrom: num(q.createdFrom),
+    createdTo: num(q.createdTo),
+    notTags: strArr(q.notTags),
+  };
+}
 
 let seq = 0;
 
@@ -134,6 +187,12 @@ export const useStore = create<State>((set, get) => ({
       if (f.tag) params.set("tag", f.tag);
       if (f.kinds.length) f.kinds.forEach((k) => params.append("kinds", k));
       if (f.ratingMin > 0) params.set("ratingMin", String(f.ratingMin));
+      if (f.ratingMax > 0 && f.ratingMax < 5) params.set("ratingMax", String(f.ratingMax));
+      if (f.addedFrom > 0) params.set("addedFrom", String(f.addedFrom));
+      if (f.addedTo > 0) params.set("addedTo", String(f.addedTo));
+      if (f.createdFrom > 0) params.set("createdFrom", String(f.createdFrom));
+      if (f.createdTo > 0) params.set("createdTo", String(f.createdTo));
+      f.notTags.forEach((t) => params.append("notTags", t));
       if (f.color) {
         params.set("color", f.color);
         params.set("colorTolerance", String(f.colorTolerance));
