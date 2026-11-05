@@ -1479,6 +1479,132 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 新条件类型的端到端语义：评分上限、日期区间、否定标签（真值语义而非仅 SQL 形状）
+    #[test]
+    fn query_new_conditions_rating_max_dates_not_tags() {
+        let (lib, dir) = temp_lib("query2");
+        let (queue, _rx) = JobQueue::new();
+        let tmp1 = std::env::temp_dir().join(format!("lilium-q3-{}.png", std::process::id()));
+        let tmp2 = std::env::temp_dir().join(format!("lilium-q4-{}.png", std::process::id()));
+        let tmp3 = std::env::temp_dir().join(format!("lilium-q5-{}.png", std::process::id()));
+        let s1 = test_png(std::env::temp_dir().as_path(), &tmp1.file_name().unwrap().to_string_lossy(), 16, 16, [1, 2, 3]);
+        let s2 = test_png(std::env::temp_dir().as_path(), &tmp2.file_name().unwrap().to_string_lossy(), 16, 16, [4, 5, 6]);
+        let s3 = test_png(std::env::temp_dir().as_path(), &tmp3.file_name().unwrap().to_string_lossy(), 16, 16, [7, 8, 9]);
+        let (a, _) = import::ingest_file(&lib, &s1, None, Some("apple.png"), &queue).unwrap();
+        let (b, _) = import::ingest_file(&lib, &s2, None, Some("banana.png"), &queue).unwrap();
+        let (c, _) = import::ingest_file(&lib, &s3, None, Some("cherry.png"), &queue).unwrap();
+
+        // 评分：a=2, b=4, c=5；标签：a,b=「水果」, c=「工具」
+        lib.batch_rating(&[a.id.clone()], 2).unwrap();
+        lib.batch_rating(&[b.id.clone()], 4).unwrap();
+        lib.batch_rating(&[c.id.clone()], 5).unwrap();
+        lib.create_tag("水果", "#22c55e").unwrap();
+        lib.create_tag("工具", "#3b82f6").unwrap();
+        lib.batch_tag(&[a.id.clone(), b.id.clone()], "水果", false).unwrap();
+        lib.batch_tag(&[c.id.clone()], "工具", false).unwrap();
+
+        // 三条添加时间错开 1 秒（直接 SQL 改，绕过导入即即 now）
+        let base: i64 = 1_700_000_000_000;
+        for (idx, id) in [&a.id, &b.id, &c.id].iter().enumerate() {
+            lib.conn
+                .execute("UPDATE items SET added_at=?1, created_at=?2 WHERE id=?3", rusqlite::params![base + (idx as i64) * 1000, base + 5_000_000 + (idx as i64) * 1000, id])
+                .unwrap();
+        }
+
+        // 评分区间 [3,4] → 只有 b（ratingMax 生效且 5 星不受界）
+        let (_, total) = lib.query_items(&query::Query {
+            rating_min: query::LooseInt(3),
+            rating_max: query::LooseInt(4),
+            ..Default::default()
+        });
+        assert_eq!(total, 1, "评分区间 [3,4] 应只命中 b");
+        // ratingMax=5 等价不设上界 → 全部 3 条
+        let (_, total) = lib.query_items(&query::Query { rating_max: query::LooseInt(5), ..Default::default() });
+        assert_eq!(total, 3, "ratingMax=5 应等价全部");
+        // ratingMin>ratingMax → 空集不报错
+        let (_, total) = lib.query_items(&query::Query {
+            rating_min: query::LooseInt(4),
+            rating_max: query::LooseInt(2),
+            ..Default::default()
+        });
+        assert_eq!(total, 0, "矛盾区间应为空集");
+
+        // 添加日期区间：只含 base+1000（b）→ 闭区间含边界
+        let (_, total) = lib.query_items(&query::Query {
+            added_from: query::LooseInt(base + 1000),
+            added_to: query::LooseInt(base + 1000),
+            ..Default::default()
+        });
+        assert_eq!(total, 1, "闭区间单点应只命中 b");
+        // 全跨度 → 3 条；created 区间（含全部）→ 3 条
+        let (_, total) = lib.query_items(&query::Query {
+            added_from: query::LooseInt(base - 1),
+            added_to: query::LooseInt(base + 9999),
+            ..Default::default()
+        });
+        assert_eq!(total, 3);
+        let (_, total) = lib.query_items(&query::Query {
+            created_from: query::LooseInt(base + 5_000_000),
+            created_to: query::LooseInt(base + 5_002_000),
+            ..Default::default()
+        });
+        assert_eq!(total, 3, "created 区间含边界应全命中");
+        // created 区间早于全部 → 空集
+        let (_, total) = lib.query_items(&query::Query {
+            created_to: query::LooseInt(base),
+            ..Default::default()
+        });
+        assert_eq!(total, 0, "区间早于全部条目应为空集");
+
+        // 否定标签：排除「水果」→ 只剩 c
+        let (_, total) = lib.query_items(&query::Query {
+            not_tags: query::LooseVec(vec!["水果".into()]),
+            ..Default::default()
+        });
+        assert_eq!(total, 1, "排除「水果」后应只剩 c");
+        let (items, _) = lib.query_items(&query::Query {
+            not_tags: query::LooseVec(vec!["水果".into()]),
+            ..Default::default()
+        });
+        assert_eq!(items[0].id, c.id);
+        // 否定 + 肯定组合：含「工具」且不含「水果」→ c；含「水果」且不含「工具」→ a,b
+        let (_, total) = lib.query_items(&query::Query {
+            tag: Some("工具".into()),
+            not_tags: query::LooseVec(vec!["水果".into()]),
+            ..Default::default()
+        });
+        assert_eq!(total, 1);
+        let (_, total) = lib.query_items(&query::Query {
+            tag: Some("水果".into()),
+            not_tags: query::LooseVec(vec!["工具".into()]),
+            ..Default::default()
+        });
+        assert_eq!(total, 2);
+        // 否定多个标签（CSV 宽松解析）：排除「水果,工具」→ 空集
+        let (_, total) = lib.query_items(&query::Query {
+            not_tags: query::LooseVec(vec!["水果".into(), "工具".into()]),
+            ..Default::default()
+        });
+        assert_eq!(total, 0);
+        // 否定不存在的标签 → 无影响
+        let (_, total) = lib.query_items(&query::Query {
+            not_tags: query::LooseVec(vec!["不存在的标签".into()]),
+            ..Default::default()
+        });
+        assert_eq!(total, 3);
+
+        // 旧库 JSON 直接经 Query 解析（不迁移）+ 新条件：未知字段忽略
+        let legacy = serde_json::json!({"ratingMin": 2, "legacyField": "should-be-ignored"});
+        let q: query::Query = serde_json::from_value(legacy).unwrap();
+        let (_, total) = lib.query_items(&q);
+        assert_eq!(total, 1, "旧 JSON(含未知字段)应只命中 rating>=2 的 b,c");
+
+        let _ = std::fs::remove_file(&s1);
+        let _ = std::fs::remove_file(&s2);
+        let _ = std::fs::remove_file(&s3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn dhash_similarity_clusters_and_ignores_far_pairs() {
         let (lib, dir) = temp_lib("simgrp");
