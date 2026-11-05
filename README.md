@@ -151,11 +151,11 @@ REST API 挂载在 `/api` 前缀下（完整列表见 `crates/lilium-server/src/
 | 文件夹 | `GET/POST /api/folders` · `PATCH/DELETE /api/folders/{id}` |
 | 标签 | `GET/POST /api/tags` · `PATCH/DELETE /api/tags/{name}` |
 | 智能文件夹 | `GET/POST /api/smart-folders` · `PUT/DELETE /api/smart-folders/{id}` |
-| 条目 | `GET /api/items`（分页/搜索/排序/过滤）· `GET/PATCH/DELETE /api/items/{id}` · `POST /api/items/{id}/{restore,tags/{tag}}` |
+| 条目 | `GET /api/items`（分页/搜索/排序/过滤）· `GET/PATCH/DELETE /api/items/{id}` · `POST /api/items/{id}/{restore,tags/{tag}}` · `GET /api/items/{id}/similar` |
 | 文件 | `GET /api/items/{id}/file` · `GET /api/thumbs/{id}`（带 ETag/304 缓存） |
 | 导入 | `POST /api/import/{paths,upload,url,eagle}` |
-| 批量 | `POST /api/batch`（tag/rating/move/trash/restore/purge）· `POST /api/batch-rename` |
-| 工具 | `GET /api/duplicates` · `GET /api/suggest` · `GET/PATCH /api/settings` · `POST /api/watch-scan` |
+| 批量 | `POST /api/batch`（tag/rating/move/trash/restore/purge）· `POST /api/batch-rename`（空白模式拒绝 400） |
+| 工具 | `GET /api/duplicates` · `GET /api/suggest` · `GET/PATCH /api/settings` · `POST /api/watch-scan` · `POST /api/reveal/{id}` |
 
 查询参数支持宽松类型（`kinds=image,video` 或 `kinds=image&kinds=video` 均可），
 排序字段走白名单（`addedAt/createdAt/name/size/width/height/rating/duration/random`），无注入风险。
@@ -166,7 +166,9 @@ REST API 挂载在 `/api` 前缀下（完整列表见 `crates/lilium-server/src/
 - core 测试覆盖：库生命周期、文件夹树（含成环保护）、导入去重（路径级 + 内容级）、
   回收站、批量操作、标签、智能文件夹、重复检测（精确 + dHash 带状索引聚类）、
   查询过滤器与排序白名单、观察文件夹 autoImport 开关、Eagle 导入边界（短 id / 非法 ext / 悬空 folder）
-- server 测试覆盖：API 契约（重命名文件夹回归、空 folderId 语义、非法目标 400、详情接口返回哈希）
+- server 测试覆盖：API 契约（重命名文件夹回归、空 folderId 语义、非法目标 400、详情接口返回哈希）、
+  批量重命名（空白模式 400 + 碰撞追加序号）、智能文件夹全生命周期（空白名 400 + CRUD）、
+  相似搜索 / 重复检测、库管理（switch/create/remove/clear-cache）
 
 ## 📋 系统要求
 
