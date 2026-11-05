@@ -1594,10 +1594,17 @@ mod tests {
         assert_eq!(total, 3);
 
         // 旧库 JSON 直接经 Query 解析（不迁移）+ 新条件：未知字段忽略
+        // ratingMin=2 是 ≥ 语义 → a(2),b(4),c(5) 全命中
         let legacy = serde_json::json!({"ratingMin": 2, "legacyField": "should-be-ignored"});
         let q: query::Query = serde_json::from_value(legacy).unwrap();
         let (_, total) = lib.query_items(&q);
-        assert_eq!(total, 1, "旧 JSON(含未知字段)应只命中 rating>=2 的 b,c");
+        assert_eq!(total, 3, "旧 JSON(含未知字段) ratingMin=2 应命中全部（≥ 语义）");
+        // 加上新条件组合：ratingMin=3 且排除「工具」→ 只有 b
+        let q: query::Query =
+            serde_json::from_value(serde_json::json!({"ratingMin": 3, "notTags": ["工具"], "unknownX": 1})).unwrap();
+        let (items, total) = lib.query_items(&q);
+        assert_eq!(total, 1, "rating>=3 且排除工具应只剩 b");
+        assert_eq!(items[0].id, b.id);
 
         let _ = std::fs::remove_file(&s1);
         let _ = std::fs::remove_file(&s2);

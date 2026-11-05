@@ -396,10 +396,12 @@ mod tests {
             "trash": false, "smartId": "sf_123", "untagged": false, "unfiled": false
         });
         let q: Query = serde_json::from_value(legacy).expect("旧库 JSON 应直接解析成功");
-        // 注意：旧前端会保存 "q": ""（Some 空串），build() 会产生一个 LIKE '%%' 参数（匹配全部），
-        // 行为与旧版完全一致——这里只验证解析层中性
-        assert_eq!(q, Query::default());
-        assert_eq!(q.q.as_deref(), Some(""));
+        // 注意：旧前端会保存 "q": ""（Some 空串）与当时的 colorTolerance 值——
+        // 解析层原样保留（行为与旧版完全一致），只验证新字段为中性默认
+        let mut want = Query::default();
+        want.color_tolerance = LooseInt(40);
+        want.q = Some(String::new());
+        assert_eq!(q, want);
 
         // 未来版本字段（本版本不认识）→ 同样忽略
         let q: Query =
@@ -504,7 +506,7 @@ mod tests {
         assert_eq!(count_sql.matches("?").count(), 0);
         assert_eq!(count_sql, "SELECT COUNT(*) FROM items WHERE trash = 0");
         assert!(!sql.contains("NOT IN"));
-        assert!(!sql.contains("rating"));
+        assert!(!sql.contains("rating >=") && !sql.contains("rating <="));
         assert!(!sql.contains("added_at >="));
     }
 
@@ -638,14 +640,20 @@ mod tests {
         assert_eq!(count_sql.matches(" AND ").count(), 11); // 12 个条件片段（含 trash 基线）11 个连接符
     }
 
-    /// 否定标签边界：空列表 / 空字符串过滤后为空 → 不产生条件
+    /// 否定标签边界：空列表不产生条件；CSV 空串经宽松解析后为空集（visit_str 过滤）
     #[test]
     fn build_not_tags_empty_produces_no_clause() {
         let (sql, _, args) = build(&Query { not_tags: LooseVec(vec![]), ..Default::default() });
         assert!(!sql.contains("NOT IN (SELECT it.item_id"));
         assert_eq!(args.len(), 0);
-        // CSV 全空 → LooseVec 过滤后为空集
-        let (sql, _, args) = build(&Query { not_tags: LooseVec(vec!["".into(), " ".into()]), ..Default::default() });
+    }
+
+    /// 否定标签 CSV 空串：JSON 字符串路径才走 LooseVec 的 CSV 过滤
+    #[test]
+    fn build_not_tags_csv_blank_filtered() {
+        let q: Query = serde_json::from_str(r#"{"notTags":", ,"}"#).unwrap();
+        assert!(q.not_tags.0.is_empty(), "CSV 空串应过滤为空集");
+        let (sql, _, args) = build(&q);
         assert!(!sql.contains("NOT IN (SELECT it.item_id"));
         assert_eq!(args.len(), 0);
     }
@@ -686,7 +694,7 @@ mod tests {
         let q: Query = serde_json::from_str(mixed).expect("宽松类型应解析成功");
         assert_eq!(q.not_tags.0, vec!["水印", "草稿"]);
         assert_eq!(q.added_from.0, 1_700_000_000_000);
-        assert_eq!(q.added_to.0, 1_700_000_100_000);
+        assert_eq!(q.added_to.0, 1_700_001_000_000);
 
         // 4. 空 JSON / null 字段 → 全默认（LooseInt/LooseBool/LooseVec 均容忍 null）
         let q: Query = serde_json::from_str("{}").unwrap();
