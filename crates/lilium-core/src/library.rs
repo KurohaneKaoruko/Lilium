@@ -759,6 +759,10 @@ impl Library {
     /// 模式不含 {index}（或多文件展开同名）时可能碰撞：自动追加 ` (2)`、` (3)` …
     /// 直到唯一。判定范围 = 库内已有名称 ∪ 本批次已用名称。
     pub fn batch_rename(&self, ids: &[String], pattern: &str) -> Result<Vec<(String, String)>, anyhow::Error> {
+        // 与单条 update_item 的空名校验对齐：空白模式会把条目名批量清空
+        if pattern.trim().is_empty() {
+            return Err(anyhow::anyhow!("重命名模式不能为空"));
+        }
         let tx = self.conn.unchecked_transaction()?;
         let mut out = vec![];
         let mut taken: std::collections::HashSet<String> = {
@@ -1336,6 +1340,17 @@ mod tests {
         for src in srcs.iter().chain(std::iter::once(&src4)) {
             let _ = std::fs::remove_file(src);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch_rename_rejects_blank_pattern() {
+        // 空白模式会把条目名批量清空成 ""，与单条 update_item 的空名校验对齐
+        let (lib, dir) = temp_lib("blankrn");
+        assert!(lib.batch_rename(&["whatever".to_string()], "").is_err());
+        assert!(lib.batch_rename(&["whatever".to_string()], "   ").is_err());
+        // 任何条目都不该被改成空名
+        assert!(lib.query_items(&Default::default()).0.iter().all(|i| !i.name.trim().is_empty()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
