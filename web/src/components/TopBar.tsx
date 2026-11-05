@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import {
   LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, X,
-  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes, BarChart3,
+  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes, BarChart3, SlidersHorizontal,
 } from "lucide-react";
 import { useStore, type ViewMode } from "../store/useStore";
 import { api } from "../api/client";
+import FiltersPanel from "./FiltersPanel";
 
 const VIEWS: { key: ViewMode; icon: React.ReactNode; label: string }[] = [
   { key: "masonry", icon: <LayoutGrid size={15} />, label: "瀑布流" },
@@ -42,6 +43,11 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
   const loading = useStore((s) => s.loading);
   const refreshMeta = useStore((s) => s.refreshMeta);
   const searchRef = useRef<HTMLInputElement>(null);
+  const advBtnRef = useRef<HTMLButtonElement>(null);
+  const [showFilters, setShowFilters] = useState(false);
+
+  // 高级筛选是否生效（评分上限 / 日期区间 / 否定标签）
+  const filtersActive = filters.ratingMax > 0 || filters.addedFrom > 0 || filters.addedTo > 0 || filters.createdFrom > 0 || filters.createdTo > 0 || filters.notTags.length > 0;
 
   // Ctrl+F 聚焦搜索
   useEffect(() => {
@@ -123,6 +129,20 @@ export default function TopBar({ onImported, immersive = false }: { onImported: 
       <button className="btn" title={asc ? "升序" : "降序"} onClick={() => setSort(sort, !asc)}>
         {asc ? "↑" : "↓"}
       </button>
+
+      {/* 高级筛选：评分区间 / 日期区间 / 否定标签（智能文件夹查询引擎新条件） */}
+      <div className="relative">
+        <button
+          ref={advBtnRef}
+          className={`btn relative ${filtersActive ? "!text-violet-300 border-violet-400/50" : ""}`}
+          title="高级筛选"
+          onClick={() => setShowFilters((v) => !v)}
+        >
+          <SlidersHorizontal size={13} />
+          {filtersActive && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-violet-400" />}
+        </button>
+        {showFilters && <FiltersPanel anchorRef={advBtnRef} onClose={() => setShowFilters(false)} />}
+      </div>
 
       {/* 搜索 */}
       <div className="relative flex-1 max-w-md ml-2">
