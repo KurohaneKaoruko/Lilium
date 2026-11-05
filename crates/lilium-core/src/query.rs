@@ -1,7 +1,7 @@
 use crate::model::Item;
 
 /// 宽松整数：兼容 query string 里的字符串数字
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LooseInt(pub i64);
 
 impl<'de> serde::Deserialize<'de> for LooseInt {
@@ -23,6 +23,10 @@ impl<'de> serde::Deserialize<'de> for LooseInt {
             }
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<LooseInt, E> {
                 v.trim().parse::<i64>().map(LooseInt).map_err(serde::de::Error::custom)
+            }
+            // JSON null（旧库/未来版本写入的空值）→ 中性 0，不报错
+            fn visit_unit<E: serde::de::Error>(self) -> Result<LooseInt, E> {
+                Ok(LooseInt(0))
             }
         }
         d.deserialize_any(V)
@@ -63,6 +67,10 @@ impl<'de> serde::Deserialize<'de> for LooseBool {
                     _ => Err(serde::de::Error::custom(format!("非法布尔: {v}"))),
                 }
             }
+            // JSON null → false（中性），不报错
+            fn visit_unit<E: serde::de::Error>(self) -> Result<LooseBool, E> {
+                Ok(LooseBool(false))
+            }
         }
         d.deserialize_any(V)
     }
@@ -76,7 +84,7 @@ impl std::ops::Deref for LooseBool {
 }
 
 /// 宽松字符串列表：兼容 `kinds=a,b` 与 `kinds=a&kinds=b` 与单个标量
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LooseVec(pub Vec<String>);
 
 struct LooseVecVisitor;
@@ -109,6 +117,10 @@ impl<'de> serde::de::Visitor<'de> for LooseVecVisitor {
         }
         Ok(LooseVec(out))
     }
+    // JSON null → 空列表（中性），不报错
+    fn visit_unit<E: serde::de::Error>(self) -> Result<LooseVec, E> {
+        Ok(LooseVec(vec![]))
+    }
 }
 
 impl<'de> serde::Deserialize<'de> for LooseVec {
@@ -124,7 +136,7 @@ impl std::ops::Deref for LooseVec {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Query {
     /// 精确单文件夹
@@ -132,12 +144,25 @@ pub struct Query {
     /// 递归时由调用方展开的全部 folder id（含子级）
     pub folder_ids: Vec<String>,
     pub tag: Option<String>,
+    /// 否定标签：排除含有任一这些标签的条目（向后兼容新增，旧库 JSON 无此字段时默认无排除）
+    #[serde(default)]
+    pub not_tags: LooseVec,
     #[serde(default)]
     pub kinds: LooseVec,
     #[serde(default)]
     pub exts: LooseVec,
     pub rating_min: LooseInt,
     pub rating_max: LooseInt,
+    /// 添加时间区间（毫秒时间戳，含边界）；0/缺失表示不设界
+    #[serde(default)]
+    pub added_from: LooseInt,
+    #[serde(default)]
+    pub added_to: LooseInt,
+    /// 拍摄/创建时间区间（毫秒时间戳，含边界）；0/缺失表示不设界
+    #[serde(default)]
+    pub created_from: LooseInt,
+    #[serde(default)]
+    pub created_to: LooseInt,
     /// 颜色过滤：`#rrggbb` 字符串或 [r,g,b]
     pub color: Option<String>,
     #[serde(default)]
@@ -219,6 +244,14 @@ pub fn build(q: &Query) -> (String, String, SqlArgs) {
         where_parts.push("id IN (SELECT it.item_id FROM item_tags it WHERE it.tag_id = ?)".into());
         args.push(Arg::S(tag.clone()));
     }
+    // 否定标签：排除含任一 not_tags 的条目（0 值/空集不产生条件）
+    if !q.not_tags.0.is_empty() {
+        let ph = q.not_tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        where_parts.push(format!("id NOT IN (SELECT it.item_id FROM item_tags it WHERE it.tag_id IN ({ph}))"));
+        for t in q.not_tags.0.iter() {
+            args.push(Arg::S(t.clone()));
+        }
+    }
     if !q.kinds.0.is_empty() {
         let ph = q.kinds.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         where_parts.push(format!("kind IN ({ph})"));
@@ -233,10 +266,28 @@ pub fn build(q: &Query) -> (String, String, SqlArgs) {
             args.push(Arg::S(e.clone()));
         }
     }
+    // 日期区间（毫秒时间戳，含边界）：0/负值视为未设界，不产生条件
+    if q.added_from.0 > 0 {
+        where_parts.push("added_at >= ?".into());
+        args.push(Arg::I(q.added_from.0));
+    }
+    if q.added_to.0 > 0 {
+        where_parts.push("added_at <= ?".into());
+        args.push(Arg::I(q.added_to.0));
+    }
+    if q.created_from.0 > 0 {
+        where_parts.push("created_at >= ?".into());
+        args.push(Arg::I(q.created_from.0));
+    }
+    if q.created_to.0 > 0 {
+        where_parts.push("created_at <= ?".into());
+        args.push(Arg::I(q.created_to.0));
+    }
     if q.rating_min.0 > 0 {
         where_parts.push("rating >= ?".into());
         args.push(Arg::I(q.rating_min.0));
     }
+    // 评分上限：>0 才生效；≥5 等价「全部」，不产生条件（保持旧行为）
     if q.rating_max.0 > 0 && q.rating_max.0 < 5 {
         where_parts.push("rating <= ?".into());
         args.push(Arg::I(q.rating_max.0));
@@ -335,6 +386,27 @@ mod tests {
     use super::*;
     use serde::Deserialize;
 
+    /// 模拟旧库 smart_folders.query 原始 JSON 直接落库再读出的完整链路（不迁移不报错）
+    #[test]
+    fn legacy_smart_folder_json_roundtrip_without_migration() {
+        // 旧版前端保存的 query（无新字段、含当时的前端全量字段）
+        let legacy = serde_json::json!({
+            "folderId": null, "recursive": true, "tag": null, "kinds": [],
+            "ratingMin": 0, "color": null, "colorTolerance": 40, "q": "",
+            "trash": false, "smartId": "sf_123", "untagged": false, "unfiled": false
+        });
+        let q: Query = serde_json::from_value(legacy).expect("旧库 JSON 应直接解析成功");
+        // 注意：旧前端会保存 "q": ""（Some 空串），build() 会产生一个 LIKE '%%' 参数（匹配全部），
+        // 行为与旧版完全一致——这里只验证解析层中性
+        assert_eq!(q, Query::default());
+        assert_eq!(q.q.as_deref(), Some(""));
+
+        // 未来版本字段（本版本不认识）→ 同样忽略
+        let q: Query =
+            serde_json::from_value(serde_json::json!({ "ratingMin": 4, "semantic": "cliip", "model": "v99" })).unwrap();
+        assert_eq!(q.rating_min.0, 4);
+    }
+
     #[test]
     fn loose_int_accepts_strings_and_numbers() {
         #[derive(Deserialize)]
@@ -420,5 +492,206 @@ mod tests {
         assert!(sql.contains("ORDER BY"));
         assert!(sql.contains("LIMIT"));
         assert!(!sql.to_lowercase().contains("drop table"));
+    }
+
+    // ---------- 组合逻辑真值表：每个独立条件要么进 WHERE 要么不进，参数按序对齐 ----------
+
+    /// 所有条件都缺席（空集）：只应剩 trash 基线条件，零参数
+    #[test]
+    fn build_empty_query_only_trash_baseline() {
+        let (sql, count_sql, args) = build(&Query::default());
+        assert_eq!(args.len(), 0);
+        assert_eq!(count_sql.matches("?").count(), 0);
+        assert_eq!(count_sql, "SELECT COUNT(*) FROM items WHERE trash = 0");
+        assert!(!sql.contains("NOT IN"));
+        assert!(!sql.contains("rating"));
+        assert!(!sql.contains("added_at >="));
+    }
+
+    /// 单条件逐个开启 → 恰好一个 WHERE 片段；带参片段参数数恰好对齐（真值表逐行验证）
+    #[test]
+    fn build_each_condition_contributes_exactly_one_clause() {
+        // (查询, 期望 SQL 片段, 期望参数个数)
+        let cases: Vec<(Query, &str, usize)> = vec![
+            (
+                Query { tag: Some("t".into()), ..Default::default() },
+                "id IN (SELECT it.item_id",
+                1,
+            ),
+            (
+                Query { not_tags: LooseVec(vec!["x".into()]), ..Default::default() },
+                "id NOT IN (SELECT it.item_id",
+                1,
+            ),
+            (Query { rating_min: LooseInt(1), ..Default::default() }, "rating >= ?", 1),
+            (Query { rating_max: LooseInt(4), ..Default::default() }, "rating <= ?", 1),
+            (Query { added_from: LooseInt(1000), ..Default::default() }, "added_at >= ?", 1),
+            (Query { added_to: LooseInt(2000), ..Default::default() }, "added_at <= ?", 1),
+            (Query { created_from: LooseInt(1000), ..Default::default() }, "created_at >= ?", 1),
+            (Query { created_to: LooseInt(2000), ..Default::default() }, "created_at <= ?", 1),
+            // 子查询存在性条件无绑定参数
+            (Query { untagged: LooseBool(true), ..Default::default() }, "id NOT IN (SELECT item_id", 0),
+            (Query { unfiled: LooseBool(true), ..Default::default() }, "folder_id IS NULL", 0),
+        ];
+        for (q, fragment, want_args) in cases {
+            let (sql, count_sql, args) = build(&q);
+            assert!(sql.contains(fragment), "SQL 缺少片段 {fragment}: {sql}");
+            assert_eq!(args.len(), want_args, "片段 {fragment} 参数数不符");
+            assert_eq!(count_sql.matches("?").count(), args.len(), "片段 {fragment} 参数数不齐");
+        }
+    }
+
+    /// 评分边界值真值表：min/max 各 0..=6，验证条件是否出现及比较方向
+    #[test]
+    fn build_rating_boundaries_truth_table() {
+        // min: 0 → 无下界；1..=5 → >=；min > max 仍生成两个条件（交集为空集是合法语义）
+        for (min, want_ge) in [(0i64, false), (1, true), (3, true), (5, true), (6, true)] {
+            let (sql, _, args) = build(&Query { rating_min: LooseInt(min), ..Default::default() });
+            assert_eq!(sql.contains("rating >="), want_ge, "min={min}");
+            assert_eq!(args.len(), if want_ge { 1 } else { 0 });
+        }
+        // max: 0/缺失 → 无上界（旧行为）；1..=4 → <=；5 → 无上界（等价全部）；>5 → 无上界
+        for (max, want_le) in [(0i64, false), (1, true), (4, true), (5, false), (6, false)] {
+            let (sql, _, args) = build(&Query { rating_max: LooseInt(max), ..Default::default() });
+            assert_eq!(sql.contains("rating <="), want_le, "max={max}");
+            assert_eq!(args.len(), if want_le { 1 } else { 0 });
+        }
+        // min=3 且 max=4 同时生效 → 区间查询，两参数按序
+        let (sql, _, args) = build(&Query {
+            rating_min: LooseInt(3),
+            rating_max: LooseInt(4),
+            ..Default::default()
+        });
+        assert!(sql.contains("rating >= ?") && sql.contains("rating <= ?"));
+        assert_eq!(args.len(), 2);
+    }
+
+    /// 日期区间边界值：0 不设界、负数不设界、正数含边界（>=/<= 双侧）
+    #[test]
+    fn build_date_range_boundaries() {
+        // 0 = 未设界
+        let (sql, _, args) = build(&Query::default());
+        assert!(!sql.contains("added_at >=") && !sql.contains("created_at <="));
+        assert_eq!(args.len(), 0);
+        // 负值同样不设界（宽松解析容错）
+        let (sql, _, _) = build(&Query { added_from: LooseInt(-5), created_to: LooseInt(-1), ..Default::default() });
+        assert!(!sql.contains("added_at >=") && !sql.contains("created_at <="));
+        // 闭区间双侧同时出现，参数按 from/to 顺序
+        let t0 = 1_700_000_000_000i64;
+        let t1 = 1_700_000_100_000i64;
+        let (sql, count_sql, args) = build(&Query {
+            added_from: LooseInt(t0),
+            added_to: LooseInt(t1),
+            ..Default::default()
+        });
+        assert!(sql.contains("added_at >= ?") && sql.contains("added_at <= ?"));
+        assert_eq!(args.len(), 2);
+        assert_eq!(count_sql.matches("?").count(), 2);
+        // 同区间用在 created_at
+        let (sql, _, _) = build(&Query {
+            created_from: LooseInt(t0),
+            created_to: LooseInt(t1),
+            ..Default::default()
+        });
+        assert!(sql.contains("created_at >= ?") && sql.contains("created_at <= ?"));
+        assert!(!sql.contains("added_at >="));
+    }
+
+    /// 多条件组合：全部条件叠加时片段齐全、参数计数严格对齐（AND 语义）
+    #[test]
+    fn build_combined_conditions_all_parts_aligned() {
+        let q = Query {
+            tag: Some("keep".into()),
+            not_tags: LooseVec(vec!["spam".into(), "draft".into()]),
+            kinds: LooseVec(vec!["image".into()]),
+            exts: LooseVec(vec!["png".into()]),
+            rating_min: LooseInt(2),
+            rating_max: LooseInt(4),
+            added_from: LooseInt(1_700_000_000_000),
+            added_to: LooseInt(1_700_000_100_000),
+            created_from: LooseInt(1_600_000_000_000),
+            created_to: LooseInt(1_600_000_100_000),
+            untagged: LooseBool(false),
+            unfiled: LooseBool(false),
+            q: Some("cat".into()),
+            ..Default::default()
+        };
+        let (sql, count_sql, args) = build(&q);
+        for fragment in [
+            "id IN (SELECT it.item_id FROM item_tags it WHERE it.tag_id = ?",
+            "id NOT IN (SELECT it.item_id FROM item_tags it WHERE it.tag_id IN (?,?)",
+            "kind IN (?)",
+            "ext IN (?)",
+            "rating >= ?",
+            "rating <= ?",
+            "added_at >= ?",
+            "added_at <= ?",
+            "created_at >= ?",
+            "created_at <= ?",
+            "lower(name) LIKE ?",
+        ] {
+            assert!(sql.contains(fragment), "缺片段 {fragment}: {sql}");
+        }
+        // tag1 + not_tags2 + kinds1 + exts1 + rating2 + added2 + created2 + 搜索3 = 14
+        assert_eq!(args.len(), 14);
+        assert_eq!(count_sql.matches("?").count(), 14);
+        assert_eq!(count_sql.matches(" AND ").count(), 11); // 12 个条件片段（含 trash 基线）11 个连接符
+    }
+
+    /// 否定标签边界：空列表 / 空字符串过滤后为空 → 不产生条件
+    #[test]
+    fn build_not_tags_empty_produces_no_clause() {
+        let (sql, _, args) = build(&Query { not_tags: LooseVec(vec![]), ..Default::default() });
+        assert!(!sql.contains("NOT IN (SELECT it.item_id"));
+        assert_eq!(args.len(), 0);
+        // CSV 全空 → LooseVec 过滤后为空集
+        let (sql, _, args) = build(&Query { not_tags: LooseVec(vec!["".into(), " ".into()]), ..Default::default() });
+        assert!(!sql.contains("NOT IN (SELECT it.item_id"));
+        assert_eq!(args.len(), 0);
+    }
+
+    /// 向后兼容：旧库智能文件夹 JSON（无新字段）+ 未知字段混合，解析不报错、未知字段忽略
+    #[test]
+    fn query_deserialize_backward_compatible_and_ignores_unknown_fields() {
+        // 1. 旧版完整 JSON：只有老字段，缺省新字段 → 不报错且为中性值
+        let legacy = r#"{
+            "folderId": null, "folderIds": [], "tag": "收藏", "kinds": ["image"],
+            "exts": "png,jpg", "ratingMin": 2, "ratingMax": 0, "color": null,
+            "colorTolerance": 40, "q": "cat", "trash": false, "untagged": false,
+            "unfiled": false, "sort": "addedAt", "asc": false, "offset": 0,
+            "limit": 200, "seed": 42
+        }"#;
+        let q: Query = serde_json::from_str(legacy).expect("旧版 JSON 应解析成功");
+        assert_eq!(q.tag.as_deref(), Some("收藏"));
+        assert_eq!(q.rating_min.0, 2);
+        assert!(q.not_tags.0.is_empty());
+        assert_eq!(q.added_from.0, 0);
+        assert_eq!(q.added_to.0, 0);
+        assert_eq!(q.created_from.0, 0);
+        assert_eq!(q.created_to.0, 0);
+        // 中性值 → 不产生新条件（老查询行为完全不变）
+        let (sql, _, _) = build(&q);
+        assert!(!sql.contains("NOT IN (SELECT it.item_id"));
+        assert!(!sql.contains("added_at >="));
+        assert!(!sql.contains("created_at <="));
+
+        // 2. 含未知字段（未来版本写入）→ 忽略不报错
+        let futuristic = r#"{"tag":"a","ratingMin":"3","orGroups":[{"tags":["x"]}],"fuzzyScore":0.9}"#;
+        let q: Query = serde_json::from_str(futuristic).expect("未知字段应被忽略");
+        assert_eq!(q.tag.as_deref(), Some("a"));
+        assert_eq!(q.rating_min.0, 3); // LooseInt 兼容字符串数字
+
+        // 3. 新字段宽松解析：毫秒时间戳可为字符串，notTags 可为 CSV
+        let mixed = r#"{"notTags":"水印,草稿","addedFrom":"1700000000000","addedTo":1700001000000}"#;
+        let q: Query = serde_json::from_str(mixed).expect("宽松类型应解析成功");
+        assert_eq!(q.not_tags.0, vec!["水印", "草稿"]);
+        assert_eq!(q.added_from.0, 1_700_000_000_000);
+        assert_eq!(q.added_to.0, 1_700_000_100_000);
+
+        // 4. 空 JSON / null 字段 → 全默认（LooseInt/LooseBool/LooseVec 均容忍 null）
+        let q: Query = serde_json::from_str("{}").unwrap();
+        assert_eq!(q, Query::default());
+        let q: Query = serde_json::from_str(r#"{"tag":null,"notTags":null,"addedFrom":null,"addedTo":null,"createdFrom":null,"createdTo":null,"ratingMin":null,"ratingMax":null,"kinds":null,"trash":null}"#).unwrap();
+        assert_eq!(q, Query::default());
     }
 }
