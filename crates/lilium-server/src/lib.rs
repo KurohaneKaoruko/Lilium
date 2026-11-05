@@ -276,6 +276,24 @@ mod tests {
         (status, v)
     }
 
+    async fn put_json(app: axum::Router, uri: &str, body: String) -> (StatusCode, serde_json::Value) {
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let v = if bytes.is_empty() { Value::Null } else { serde_json::from_slice(&bytes).unwrap_or(Value::Null) };
+        (status, v)
+    }
+
     async fn get_json(app: axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
         let res = app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap();
         let status = res.status();
@@ -391,6 +409,104 @@ mod tests {
         let hash = detail["hash"].as_str().expect("详情接口应返回 hash");
         assert_eq!(hash.len(), 40, "SHA1 hex 长度应为 40");
         assert!(detail["phash"].is_null() || detail["phash"].is_string());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn batch_rename_blank_pattern_is_400_and_rename_works() {
+        // 空白模式会把条目名批量清空；错误消息含「不能」应自动映射 400（正反路径）
+        let (app, base) = test_app("rnblank");
+        // 正路径：上传一张图 → 批量重命名成功
+        let boundary = "----liliumrn";
+        let mut body = format!(
+            "--{b}\r\ncontent-disposition: form-data; name=\"file\"; filename=\"a.png\"\r\ncontent-type: image/png\r\n\r\n",
+            b = boundary
+        )
+        .into_bytes();
+        body.extend_from_slice(&png_bytes(12, 12));
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n", boundary = boundary).as_bytes());
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/upload")
+                    .header("content-type", format!("multipart/form-data; boundary={boundary}", boundary = boundary))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let up: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = up["items"][0]["id"].as_str().unwrap().to_string();
+
+        let (status, v) = post_json(app.clone(), "/api/batch-rename", r#"{"ids":["ID"],"pattern":"n.{ext}"}"#.replace("ID", &id)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["renamed"][0][1], "n.png");
+
+        // 反路径 1：空白 pattern → 400，原名保留
+        let (status, v) = post_json(app.clone(), "/api/batch-rename", format!(r#"{{"ids":["{id}"],"pattern":"   "}}"#)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "空白模式应映射 400: {v}");
+        let (_, items) = get_json(app.clone(), "/api/items").await;
+        assert_eq!(items["items"][0]["name"], "n.png", "失败请求不应改动任何名称");
+
+        // 反路径 2：未知条目 id → 结果为空（幂等），不报错
+        let (status, v) = post_json(app, "/api/batch-rename", r#"{"ids":["nope"],"pattern":"x"}"#.into()).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["renamed"].as_array().map(|a| a.len()), Some(0));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn smart_folder_lifecycle_and_blank_name_is_400() {
+        // 智能文件夹 CRUD + 空白名校验（错误消息含「不能」自动映射 400）
+        let (app, base) = test_app("smart");
+        // 反路径：空白名创建 → 400
+        let (status, v) = post_json(app.clone(), "/api/smart-folders", r#"{"name":"  ","query":{"ratingMin":1}}"#.into()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "空白名应映射 400: {v}");
+        // 正路径：创建 → 列表可见 → 更新 → 删除
+        let q = serde_json::json!({ "ratingMin": 3 }).to_string();
+        let (status, v) = post_json(app.clone(), "/api/smart-folders", format!(r#"{{"name":"高分","query":{q}}}"#)).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let id = v["id"].as_str().unwrap().to_string();
+        let (_, list) = get_json(app.clone(), "/api/smart-folders").await;
+        assert_eq!(list[0]["name"], "高分");
+        // 反路径：更新为空白名 → 400（PUT 路由）
+        let (status, v) = put_json(
+            app.clone(),
+            &format!("/api/smart-folders/{id}"),
+            r#"{"name":"  ","query":{}}"#.into(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "更新为空白名应映射 400: {v}");
+        // 正路径：PUT 正常更新
+        let (status, v) = put_json(
+            app.clone(),
+            &format!("/api/smart-folders/{id}"),
+            r#"{"name":"高分图片","query":{"ratingMin":4}}"#.into(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let (_, list) = get_json(app.clone(), "/api/smart-folders").await;
+        assert_eq!(list[0]["name"], "高分图片");
+        assert_eq!(list[0]["query"]["ratingMin"], 4);
+        // 删除
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/smart-folders/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let (_, list) = get_json(app, "/api/smart-folders").await;
+        assert_eq!(list.as_array().map(|a| a.len()), Some(0));
         let _ = std::fs::remove_dir_all(&base);
     }
 
