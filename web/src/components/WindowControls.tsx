@@ -53,14 +53,14 @@ export default function WindowControls() {
 
   if (!win) return null;
 
-  const btn =
-    "h-full w-11 flex items-center justify-center text-neutral-400 hover:text-white transition-colors";
+  const btn = "window-button";
 
   return (
-    <div className="flex items-center h-full shrink-0" data-tauri-drag-region>
+    <div className="window-controls" data-tauri-drag-region>
       <button
         className={`${btn} hover:bg-white/10`}
         title="最小化"
+        aria-label="最小化窗口"
         onClick={() => win.minimize().catch(() => {})}
       >
         <Minus size={14} />
@@ -68,6 +68,7 @@ export default function WindowControls() {
       <button
         className={`${btn} hover:bg-white/10`}
         title={maxed ? "还原" : "最大化"}
+        aria-label={maxed ? "还原窗口" : "最大化窗口"}
         onClick={() => win.toggleMaximize().catch(() => {})}
       >
         {maxed ? <Copy size={12} className="-scale-x-100" /> : <Square size={11} />}
@@ -75,6 +76,7 @@ export default function WindowControls() {
       <button
         className={`${btn} hover:bg-red-500/80 hover:!text-white`}
         title="关闭"
+        aria-label="关闭窗口"
         onClick={() => win.close().catch(() => {})}
       >
         <X size={15} />

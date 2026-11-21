@@ -7,10 +7,10 @@
 ## ✨ 核心特性
 
 ### 无限视图
-所有图片平铺在一张无限画布上，按图片纵横比错落有致地拼贴成封面墙：
-- 向**上下左右任意方向**自由拖拽平移，滚轮以光标为中心缩放
-- 布局按需生成（环形生长算法），数万张图片依然流畅
-- Shift+拖拽框选、双击大图预览、点阵背景随视差移动
+所有已载入的素材在一张无限画布上错落铺开：
+- 向**上下左右任意方向**拖动平移，`Ctrl` / `⌘` + 滚轮以光标为中心缩放
+- 按可见区域生成瓦片，可用右下角控件缩放或重置画布
+- 点击聚焦一份素材，双击打开预览；按住 `Shift` 拖动可框选多项
 
 ### 完整功能集
 - 📁 **嵌套文件夹** + 📌 **智能文件夹**（保存搜索条件，含评分区间 / 日期区间 / 否定标签）
@@ -18,11 +18,14 @@
 - ⭐ 评分（0–5 星）、📝 注释、🔗 来源 URL
 - 🎨 **主色 / 调色板提取**（k-means），按颜色搜索图片
 - 🔍 搜索（名称 / 注释 / 标签）、排序（时间 / 名称 / 大小 / 尺寸 / 评分 / 随机）
-- 🖼️ 四种浏览视图：瀑布流 / 网格 / 列表 / **无限视图**
+- 🖼️ 五种浏览视图：瀑布流 / 网格 / 列表 / **无限视图** / 分类墙
+- 🧭 Web 和桌面共用工作台：宽屏固定侧栏与详情栏，窄屏使用图标栏或抽屉；可单独移除已应用的筛选
+- 🎛️ 工作台记住上次的视图、排序和缩略图大小；命令面板可快速切换视图、打开筛选或导入素材
 - 🗑️ 回收站（软删除 + 彻底删除）
 - 📥 导入：文件选择器、磁盘路径、URL 拖网、**观察文件夹自动导入**
 - 🔁 重复文件检测（SHA1 精确 + dHash 感知哈希相似搜索）
 - ✂️ 批量操作：加标签 / 评分 / 移动 / 重命名（支持 `{name} {index} {date} {w} {h}` 模式）
+- ☑️ 点击「多选」后，可逐项点按选中素材，无需键盘修饰键；操作栏显示选中数量和总文件大小
 - 📷 EXIF 读取（相机 / 参数 / 拍摄时间）、视频海报帧（自动检测 ffmpeg）
 
 ### 📦 库迁移导入
@@ -71,7 +74,7 @@ docker run -d -p 7333:7333 -v lilium-data:/data ghcr.io/kurohanekaoruko/lilium:l
 ## 📦 导入现有库
 
 两种方式：
-1. **Web UI**：顶栏 → 「库导入」→ 输入 `.library` 库目录的绝对路径
+1. **Web UI**：顶栏 → 「导入素材」→ 「迁移现有资源库」→ 输入 `.library` 库目录的绝对路径
 2. **命令行**：`lilium-server --library ~/Pictures/Design.library`（自动识别并导入）
 
 导入在库旁生成同名 `.lilium` 库，原库保持只读不动。
@@ -80,14 +83,16 @@ docker run -d -p 7333:7333 -v lilium-data:/data ghcr.io/kurohanekaoruko/lilium:l
 
 | 按键 | 功能 |
 |---|---|
-| `Ctrl+F` | 搜索 |
-| `Ctrl+A` | 全选 |
-| `1/2/3/4` | 瀑布流 / 网格 / 列表 / 无限视图 |
+| `Ctrl+F` / `⌘F` | 聚焦搜索 |
+| `Ctrl+K` / `⌘K` | 打开命令面板；用方向键选择、`Enter` 执行 |
+| `Ctrl+A` / `⌘A` | 全选已载入的素材 |
+| `1/2/3/4/5` | 瀑布流 / 网格 / 列表 / 无限视图 / 分类墙 |
 | `Enter` | 大图预览 |
 | `←→` | 预览切换 |
 | `0–5` | 预览中快速评分 |
-| `Del` | 删除选中 |
-| `Esc` | 关闭 / 取消 |
+| `Del` | 将选中素材移到回收站 |
+| `Esc` | 关闭弹层或取消选择 |
+| `?` | 查看快捷键 |
 
 ## 🏗️ 架构
 
@@ -112,7 +117,7 @@ web/              前端：React 18 + TypeScript + Tailwind v4 + Zustand
 ```bash
 # 构建与测试（Rust 侧）
 cargo build
-cargo test                     # 全部单元测试（core 31 + server 4）
+cargo test                     # 工作区测试
 
 # 只构建 / 测试某个 crate
 cargo build -p lilium-core
@@ -127,6 +132,21 @@ cd web && npm install && npm run dev
 # 生成示例图片（用于本地演示 / 测试）
 cargo run -p lilium-server --bin gen-samples -- sample-images
 ```
+
+### 浏览器冒烟测试
+
+用临时素材库覆盖桌面和窄屏下的导入、画布框选、筛选、详情和预览，也检查命令面板、多选和偏好恢复，不会修改已有库：
+
+```bash
+cargo build -p lilium-server --bin lilium-server
+npm --prefix web ci && npm --prefix web run build
+# 在 Python 虚拟环境中安装 Playwright
+python -m pip install playwright
+python -m playwright install chromium
+python scripts/smoke-workspace.py
+```
+
+可选 `--screenshots <目录>` 保存截图；用 `LILIUM_CHROMIUM` 指定已有 Chromium 的可执行文件。
 
 ### 服务端 CLI 参数
 
@@ -177,8 +197,8 @@ REST API 挂载在 `/api` 前缀下（完整列表见 `crates/lilium-server/src/
 | 状态 | `trash` / `untagged` / `unfiled` | 回收站 / 未打标 / 未分类 |
 | 排序 | `sort` + `asc` + `offset/limit` | 白名单排序 + 分页，`random` 带种子分页连续 |
 
-Web 端 TopBar 漏斗按钮可设置评分区间 / 日期区间 / 否定标签；侧栏「保存智能文件夹」
-把当前全部筛选（含新条件）存为 JSON，点击智能文件夹即恢复。
+工作台的「筛选」按钮可设置评分区间、日期区间和排除标签，点击「应用筛选」后才更新结果。
+侧栏「保存当前筛选」会把条件保存为智能文件夹，点击该文件夹即可恢复这些条件。
 
 ### 测试约定
 

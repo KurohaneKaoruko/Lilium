@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { BarChart3, X, Images, HardDrive, FolderTree, Star, Trash2, Sparkles } from "lucide-react";
-import { api } from "../../api/client";
-import { Modal } from "./Modals";
+import { api, humanSize as fmtSize } from "../../api/client";
+import { Modal } from "../ui/Dialog";
+import { KINDS } from "../../lib/workspace";
 
 interface Stats {
   itemCount: number;
@@ -20,23 +21,12 @@ interface Stats {
   largest: { id: string; name: string; size: number }[];
 }
 
-function fmtSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
-  return `${(n / 1073741824).toFixed(2)} GB`;
-}
-
-const KIND_LABELS: Record<string, string> = {
-  image: "图片", video: "视频", audio: "音频", document: "文档", font: "字体", other: "其他",
-};
-
 /** 概览统计卡片 */
 function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
     <div className="bg-white/[.03] border border-border/60 rounded-lg p-3">
       <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 mb-1">{icon} {label}</div>
-      <div className="text-lg font-semibold text-neutral-200 tabular-nums">{value}</div>
+      <div className="text-base font-semibold text-ink tabular-nums">{value}</div>
     </div>
   );
 }
@@ -57,9 +47,10 @@ function BarRow({ label, value, max, color, right }: { label: string; value: num
 /** 统计仪表盘 */
 export default function StatsModal({ onClose }: { onClose: () => void }) {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api<Stats>("/stats").then(setStats).catch(() => {});
+    api<Stats>("/stats").then(setStats).catch((error: Error) => setError(error.message));
   }, []);
 
   const maxMonth = Math.max(1, ...(stats?.months.map((m) => m.count) ?? [1]));
@@ -68,18 +59,18 @@ export default function StatsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <Modal title="库统计" onClose={onClose} icon={<BarChart3 size={15} />}>
-      {!stats ? (
-        <div className="py-10 text-center text-xs text-neutral-500">加载中…</div>
+      {error ? <p className="inline-error" role="alert">库统计载入失败：{error}</p> : !stats ? (
+        <div className="py-10 text-center text-xs text-muted" role="status">正在加载库统计…</div>
       ) : (
-        <div className="space-y-5 w-[560px] max-w-[80vw]">
+        <div className="space-y-5">
           {/* 概览 */}
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <StatCard icon={<Images size={12} />} label="图片素材" value={String(stats.itemCount)} />
             <StatCard icon={<HardDrive size={12} />} label="占用空间" value={fmtSize(stats.totalSize)} />
             <StatCard icon={<FolderTree size={12} />} label="文件夹" value={String(stats.folderCount)} />
             <StatCard icon={<Sparkles size={12} />} label="智能文件夹" value={String(stats.smartFolderCount)} />
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             <StatCard icon={<Star size={12} />} label="已评分" value={`${stats.itemCount ? Math.round((stats.withRating / stats.itemCount) * 100) : 0}%`} />
             <StatCard icon={<Sparkles size={12} />} label="已打标" value={`${stats.itemCount ? Math.round((stats.withTags / stats.itemCount) * 100) : 0}%`} />
             <StatCard icon={<Sparkles size={12} />} label="标签数" value={String(stats.tagCount)} />
@@ -94,7 +85,7 @@ export default function StatsModal({ onClose }: { onClose: () => void }) {
                 {stats.kinds.map((k) => (
                   <BarRow
                     key={k.kind}
-                    label={KIND_LABELS[k.kind] ?? k.kind}
+                    label={KINDS[k.kind as keyof typeof KINDS] ?? k.kind}
                     value={k.count}
                     max={totalKinds}
                     color="#8b5cf6"
@@ -126,7 +117,7 @@ export default function StatsModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          <div className="grid grid-cols-2 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
             {/* 标签 Top */}
             {stats.topTags.length > 0 && (
               <div>

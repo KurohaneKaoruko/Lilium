@@ -1,222 +1,95 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Star, X } from "lucide-react";
-import { defaultFilters, useStore } from "../store/useStore";
+import { useState, type RefObject } from "react";
+import { CalendarDays, Camera, RotateCcw, Star, Tag, X } from "lucide-react";
+import { useStore, type Filters } from "../store/useStore";
+import { advancedFilterCount } from "../lib/workspace";
+import Popover from "./ui/Popover";
 
-/** 日期快捷区间（毫秒） */
-const DAY = 86_400_000;
-const DATE_PRESETS: { label: string; fromDays: number | null }[] = [
-  { label: "今天", fromDays: 0 },
-  { label: "近 7 天", fromDays: 7 },
-  { label: "近 30 天", fromDays: 30 },
-  { label: "近一年", fromDays: 365 },
-];
+const presets = [{ label: "今天", days: 0 }, { label: "近 7 天", days: 7 }, { label: "近 30 天", days: 30 }, { label: "近一年", days: 365 }];
+const reset = { ratingMin: 0, ratingMax: 0, addedFrom: 0, addedTo: 0, createdFrom: 0, createdTo: 0, notTags: [] };
 
-/** 毫秒时间戳 → datetime-local 输入值（本地时区） */
-function toLocalInput(ms: number): string {
+function localInput(ms: number) {
   if (!ms) return "";
   const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-function fromLocalInput(v: string): number {
-  if (!v) return 0;
-  const ms = new Date(v).getTime();
-  return Number.isFinite(ms) ? ms : 0;
+  if (Number.isNaN(d.getTime())) return "";
+  return new Date(ms - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
-/**
- * 高级筛选面板：TopBar 漏斗按钮弹出（portal 到 body）。
- * 覆盖智能文件夹查询引擎的新条件类型：评分区间 / 日期区间 / 否定标签。
- * 关闭即应用（面板只改 store，查询由 store 的 setFilters 统一触发）。
- */
-export default function FiltersPanel({ anchorRef, onClose }: { anchorRef: React.RefObject<HTMLButtonElement | null>; onClose: () => void }) {
+function getTime(value: string) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
+export default function FiltersPanel({ anchorRef, onClose }: { anchorRef: RefObject<HTMLButtonElement>; onClose: () => void }) {
   const filters = useStore((s) => s.filters);
-  const setFilters = useStore((s) => s.setFilters);
   const tags = useStore((s) => s.tags);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  const [draft, setDraft] = useState(() => ({ ratingMin: filters.ratingMin, ratingMax: filters.ratingMax === 5 ? 0 : filters.ratingMax,
+    addedFrom: filters.addedFrom, addedTo: filters.addedTo, createdFrom: filters.createdFrom, createdTo: filters.createdTo, notTags: filters.notTags }));
+  const [tagSearch, setTagSearch] = useState("");
+  const patch = (next: Partial<typeof draft>) => setDraft((prev) => ({ ...prev, ...next }));
+  const count = advancedFilterCount({ ...filters, ...draft });
+  const invalidRating = draft.ratingMax > 0 && draft.ratingMin > draft.ratingMax;
+  const invalidDates = (draft.addedFrom && draft.addedTo && draft.addedFrom > draft.addedTo)
+    || (draft.createdFrom && draft.createdTo && draft.createdFrom > draft.createdTo);
+  const close = () => { anchorRef.current?.focus(); onClose(); };
+  const choices = tags.filter((tag) => tag.name.toLowerCase().includes(tagSearch.trim().toLowerCase()));
+  const apply = (patch: Partial<Filters>) => { useStore.getState().setFilters(patch); close(); };
 
-  useLayoutEffect(() => {
-    const el = anchorRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    setPos({
-      left: Math.max(8, Math.min(r.right - 300, window.innerWidth - 316)),
-      top: Math.min(r.bottom + 8, window.innerHeight - 200),
-    });
-  }, [anchorRef]);
-
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node) && !anchorRef.current?.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose, anchorRef]);
-
-  if (!pos) return null;
-
-  const addedActive = filters.addedFrom > 0 || filters.addedTo > 0;
-  const createdActive = filters.createdFrom > 0 || filters.createdTo > 0;
-  const advancedActive = filters.ratingMax > 0 || addedActive || createdActive || filters.notTags.length > 0;
-
-  const patch = (p: Parameters<typeof setFilters>[0]) => setFilters(p);
-
-  return createPortal(
-    <div
-      ref={rootRef}
-      className="fixed z-[70] w-[300px] rounded-xl border border-border bg-panel shadow-2xl p-3 space-y-3 text-xs"
-      style={{ left: pos.left, top: pos.top }}
-    >
-      {/* 评分区间 */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-neutral-400 flex items-center gap-1"><Star size={11} /> 评分区间</span>
-          {(filters.ratingMin > 0 || filters.ratingMax > 0) && (
-            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => patch({ ratingMin: 0, ratingMax: 0 })}><X size={11} /></button>
-          )}
+  return <Popover anchor={anchorRef} label="高级筛选" onClose={onClose} className="filters-panel">
+    <header className="popover-heading"><div><h2>高级筛选</h2><p>缩小范围，更快找到需要的素材</p></div>
+      <button className="icon-button" aria-label="关闭筛选" onClick={close}><X size={17} /></button></header>
+    <form className="filter-form" onSubmit={(event) => { event.preventDefault(); if (!invalidDates && !invalidRating) apply(draft); }}>
+      <div className="filter-scroll">
+      <div className="filter-section">
+        <h3><Star size={16} />评分区间</h3>
+        <div className="filter-fields">
+          <label className="field-label">最低评分<select className="input" value={draft.ratingMin} onChange={(e) => patch({ ratingMin: Number(e.target.value) })}>
+            {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n ? `${n} 星` : "不限"}</option>)}
+          </select></label>
+          <label className="field-label">最高评分<select className="input" value={draft.ratingMax} onChange={(e) => patch({ ratingMax: Number(e.target.value) })}>
+            {[0, 1, 2, 3, 4].map((n) => <option key={n} value={n}>{n ? `${n} 星` : "不限"}</option>)}
+          </select></label>
         </div>
-        <div className="flex items-center gap-1">
-          <select
-            className="input !py-0.5 !px-1 flex-1"
-            value={filters.ratingMin}
-            onChange={(e) => patch({ ratingMin: Number(e.target.value) })}
-            title="最低评分"
-          >
-            {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n === 0 ? "不限" : `≥ ${n} 星`}</option>)}
-          </select>
-          <span className="text-neutral-600">–</span>
-          <select
-            className="input !py-0.5 !px-1 flex-1"
-            value={filters.ratingMax}
-            onChange={(e) => patch({ ratingMax: Number(e.target.value) })}
-            title="最高评分"
-          >
-            {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n === 0 || n === 5 ? "不限" : `≤ ${n} 星`}</option>)}
-          </select>
+        {invalidRating && <p className="inline-error" role="alert">最低评分不能高于最高评分。</p>}
+      </div>
+      <div className="filter-section">
+        <h3><CalendarDays size={16} />添加时间{Boolean(draft.addedFrom || draft.addedTo) && <button type="button" className="text-button ml-auto" onClick={() => patch({ addedFrom: 0, addedTo: 0 })}>清除</button>}</h3>
+        <div className="flex flex-wrap gap-1.5">{presets.map(({ label, days }) => <button className="chip" type="button" key={days} onClick={() => {
+          const from = new Date();
+          if (days) from.setDate(from.getDate() - days); else from.setHours(0, 0, 0, 0);
+          patch({ addedFrom: from.getTime(), addedTo: 0 });
+        }}>{label}</button>)}</div>
+        <DateFields label="添加时间" from={draft.addedFrom} to={draft.addedTo} setFrom={(addedFrom) => patch({ addedFrom })} setTo={(addedTo) => patch({ addedTo })} />
+      </div>
+      <div className="filter-section">
+        <h3><Camera size={16} />拍摄 / 创建时间{Boolean(draft.createdFrom || draft.createdTo) && <button type="button" className="text-button ml-auto" onClick={() => patch({ createdFrom: 0, createdTo: 0 })}>清除</button>}</h3>
+        <DateFields label="拍摄时间" from={draft.createdFrom} to={draft.createdTo} setFrom={(createdFrom) => patch({ createdFrom })} setTo={(createdTo) => patch({ createdTo })} />
+      </div>
+      <div className="filter-section">
+        <h3><Tag size={16} />排除标签</h3>
+        {(tags.length > 8 || tagSearch) && <input type="search" className="input w-full" value={tagSearch} onChange={(event) => setTagSearch(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} placeholder="查找标签…" aria-label="查找要排除的标签" />}
+        <div className="filter-tags">
+          {choices.map(({ name, color }) => <button key={name} className="chip" type="button" aria-pressed={draft.notTags.includes(name)} onClick={() => {
+            patch({ notTags: draft.notTags.includes(name) ? draft.notTags.filter((x) => x !== name) : [...draft.notTags, name] });
+          }}><span className="color-dot" style={{ backgroundColor: color }} /><span className="truncate">{name}</span></button>)}
+          {!choices.length && <p className="text-muted text-xs">{tags.length ? "没有匹配的标签" : "资源库还没有标签"}</p>}
         </div>
       </div>
-
-      {/* 日期区间 */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-neutral-400">📅 添加时间</span>
-          {addedActive && (
-            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => patch({ addedFrom: 0, addedTo: 0 })}><X size={11} /></button>
-          )}
-        </div>
-        <div className="flex items-center gap-1 mb-1">
-          {DATE_PRESETS.map((p) => (
-            <button
-              key={p.label}
-              className="px-1.5 py-0.5 rounded bg-panel2 border border-border hover:bg-white/5 text-[11px]"
-              onClick={() => patch({ addedFrom: p.fromDays === 0 ? startOfToday() : Date.now() - p.fromDays! * DAY, addedTo: 0 })}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1">
-          <input
-            type="datetime-local"
-            className="input !py-0.5 !px-1 flex-1"
-            value={toLocalInput(filters.addedFrom)}
-            onChange={(e) => patch({ addedFrom: fromLocalInput(e.target.value) })}
-          />
-          <span className="text-neutral-600">–</span>
-          <input
-            type="datetime-local"
-            className="input !py-0.5 !px-1 flex-1"
-            value={toLocalInput(filters.addedTo)}
-            onChange={(e) => patch({ addedTo: fromLocalInput(e.target.value) })}
-          />
-        </div>
       </div>
-
-      {/* 拍摄/创建时间区间 */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-neutral-400">📷 拍摄时间</span>
-          {createdActive && (
-            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => patch({ createdFrom: 0, createdTo: 0 })}><X size={11} /></button>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          <input
-            type="datetime-local"
-            className="input !py-0.5 !px-1 flex-1"
-            value={toLocalInput(filters.createdFrom)}
-            onChange={(e) => patch({ createdFrom: fromLocalInput(e.target.value) })}
-          />
-          <span className="text-neutral-600">–</span>
-          <input
-            type="datetime-local"
-            className="input !py-0.5 !px-1 flex-1"
-            value={toLocalInput(filters.createdTo)}
-            onChange={(e) => patch({ createdTo: fromLocalInput(e.target.value) })}
-          />
-        </div>
+      <div className="filter-actions">
+        <button className="btn" type="button" onClick={() => patch(reset)} disabled={!count}><RotateCcw size={15} />重置</button>
+        <button className="btn-primary" disabled={Boolean(invalidDates || invalidRating)}>应用筛选{count > 0 ? ` · ${count}` : ""}</button>
       </div>
-
-      {/* 否定标签 */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <span className="text-neutral-400">🚫 排除标签</span>
-          {filters.notTags.length > 0 && (
-            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => patch({ notTags: [] })}><X size={11} /></button>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-          {tags.length === 0 && <span className="text-neutral-600">暂无标签</span>}
-          {tags.map((t) => {
-            const on = filters.notTags.includes(t.name);
-            return (
-              <button
-                key={t.name}
-                title={on ? "取消排除" : "排除含该标签的图片"}
-                className={`px-1.5 py-0.5 rounded border text-[11px] transition-colors ${
-                  on ? "bg-red-500/20 border-red-400/60 text-red-300" : "bg-panel2 border-border hover:bg-white/5"
-                }`}
-                onClick={() => patch({ notTags: on ? filters.notTags.filter((x) => x !== t.name) : [...filters.notTags, t.name] })}
-              >
-                {on ? "✕ " : ""}{t.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* 重置全部 */}
-      <button
-        className="btn w-full justify-center"
-        onClick={() => setFilters({ ...defaultFilters, smartId: filters.smartId })}
-        title="恢复默认筛选"
-      >
-        重置筛选
-      </button>
-
-      {advancedActive && (
-        <div className="text-[10px] text-violet-300/80 text-center">有高级筛选生效中</div>
-      )}
-    </div>,
-    document.body
-  );
+    </form>
+  </Popover>;
 }
 
-/** 本地时区今天 0 点 */
-function startOfToday(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+function DateFields({ label, from, to, setFrom, setTo }: { label: string; from: number; to: number; setFrom: (v: number) => void; setTo: (v: number) => void }) {
+  return <>
+    <div className="filter-fields date-fields">
+      <label className="field-label">起始<input type="datetime-local" className="input" value={localInput(from)} aria-label={`${label}起始`} onChange={(e) => setFrom(getTime(e.target.value))} /></label>
+      <label className="field-label">结束<input type="datetime-local" className="input" value={localInput(to)} aria-label={`${label}结束`} onChange={(e) => setTo(getTime(e.target.value))} /></label>
+    </div>
+    {Boolean(from && to && from > to) && <p className="inline-error" role="alert">结束时间不能早于起始时间。</p>}
+  </>;
 }

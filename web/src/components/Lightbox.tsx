@@ -1,251 +1,165 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut, Info, Tag as TagIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, Download, Info, Maximize, Minus, PanelRightOpen, Plus, X } from "lucide-react";
 import { useStore } from "../store/useStore";
-import { fileUrl, api, type Exif } from "../api/client";
-import { Stars } from "./views/shared";
+import { api, fileUrl, fmtDate, humanSize, type Exif, type Item } from "../api/client";
+import { KINDS } from "../lib/workspace";
+import { reportError } from "../lib/feedback";
+import { Dialog } from "./ui/Dialog";
+import TagEditor from "./ui/TagEditor";
+import { DataRow, EXIF_LABELS, updateItem } from "./DetailPanel";
+import { PlaceholderThumb, Stars, Thumb } from "./views/shared";
 
-/** EXIF 中文标签 */
-const EXIF_LABELS: Record<string, string> = {
-  make: "相机厂商", model: "相机型号", lens: "镜头", iso: "ISO",
-  fnumber: "光圈", exposure: "快门", focal: "焦距", date: "拍摄时间",
-};
-
-/** 灯箱大图预览：缩放、平移、左右切换、快速评分、EXIF、快速打标 */
 export default function Lightbox() {
-  const lightboxId = useStore((s) => s.lightboxId);
-  const setLightbox = useStore((s) => s.setLightbox);
+  const id = useStore((s) => s.lightboxId);
   const items = useStore((s) => s.items);
-  const patchItemLocal = useStore((s) => s.patchItemLocal);
-  const [zoom, setZoom] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const drag = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null);
+  const setLightbox = useStore((s) => s.setLightbox);
+  const index = items.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  return <Viewer items={items} index={index} onSelect={setLightbox} onClose={() => setLightbox(null)} />;
+}
+
+const clampZoom = (zoom: number) => Math.min(8, Math.max(1, zoom));
+const origin = { x: 0, y: 0, zoom: 1 };
+
+function Viewer({ items, index, onSelect, onClose }: { items: Item[]; index: number; onSelect: (id: string) => void; onClose: () => void }) {
+  const item = items[index];
   const [showInfo, setShowInfo] = useState(false);
-  const [exif, setExif] = useState<Exif | null>(null);
-  const [tagInput, setTagInput] = useState("");
-  const refreshMeta = useStore((s) => s.refreshMeta);
+  const [transform, setTransform] = useState(origin);
+  const [isDragging, setDragging] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ pointer: number; x: number; y: number; tx: number; ty: number } | null>(null);
+  const ratingBusy = useRef(false);
+  const zoom = transform.zoom;
+  const image = item.kind === "image";
 
-  // 切换图片 → 拉取 EXIF,重置视图
+  const setZoom = (factor: number) => setTransform((view) => {
+    const zoom = clampZoom(view.zoom * factor);
+    return zoom === 1 ? origin : { ...view, zoom };
+  });
   useEffect(() => {
-    setZoom(1);
-    setOffset({ x: 0, y: 0 });
-    setExif(null);
-    if (!lightboxId) return;
-    api<{ exif: Exif | null }>(`/items/${lightboxId}`)
-      .then((d) => setExif(d.exif))
-      .catch(() => setExif(null));
-  }, [lightboxId]);
-
-  const addTag = async (name: string) => {
-    const n = name.trim();
-    if (!n || !lightboxId) return;
-    await api(`/items/${lightboxId}/tags/${encodeURIComponent(n)}`, { method: "PUT" });
-    useStore.getState().patchItemLocal(lightboxId, { tags: [...(item?.tags ?? []), n] } as never);
-    setTagInput("");
-    refreshMeta();
-  };
-
-  const removeTag = async (t: string) => {
-    if (!lightboxId) return;
-    await api(`/items/${lightboxId}/tags/${encodeURIComponent(t)}`, { method: "DELETE" });
-    useStore.getState().patchItemLocal(lightboxId, { tags: (item?.tags ?? []).filter((x) => x !== t) } as never);
-    refreshMeta();
-  };
-
-  const idx = items.findIndex((i) => i.id === lightboxId);
-  const item = idx >= 0 ? items[idx] : null;
-
-  const go = useCallback(
-    (d: number) => {
-      const next = items[idx + d];
-      if (next) {
-        setLightbox(next.id);
-        setZoom(1);
-        setOffset({ x: 0, y: 0 });
-      }
-    },
-    [idx, items, setLightbox],
-  );
-
-  useEffect(() => {
-    if (!lightboxId) return;
-    const h = (e: KeyboardEvent) => {
-      // 输入框聚焦时不拦截按键
-      const t = e.target as HTMLElement;
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-      if (e.key === "Escape") setLightbox(null);
-      else if (e.key === "ArrowLeft") go(-1);
-      else if (e.key === "ArrowRight") go(1);
-      else if (/^[1-5]$/.test(e.key)) {
-        const v = Number(e.key);
-        patchItemLocal(lightboxId, { rating: v });
-        api(`/items/${lightboxId}`, { method: "PATCH", body: JSON.stringify({ rating: v }) });
-      } else if (e.key === "0") {
-        patchItemLocal(lightboxId, { rating: 0 });
-        api(`/items/${lightboxId}`, { method: "PATCH", body: JSON.stringify({ rating: 0 }) });
-      }
+    const area = stageRef.current;
+    if (!image || !area) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const bounds = area.getBoundingClientRect();
+      const x = event.clientX - bounds.left - bounds.width / 2;
+      const y = event.clientY - bounds.top - bounds.height / 2;
+      const step = event.deltaMode === 1 ? event.deltaY * 15 : event.deltaY;
+      setTransform((view) => {
+        const zoom = clampZoom(view.zoom * Math.exp(-step * .0019));
+        if (zoom === 1) return origin;
+        const scale = zoom / view.zoom;
+        return { zoom, x: x - (x - view.x) * scale, y: y - (y - view.y) * scale };
+      });
     };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [lightboxId, go, setLightbox, patchItemLocal]);
+    area.addEventListener("wheel", wheel, { passive: false });
+    return () => area.removeEventListener("wheel", wheel);
+  }, [image]);
 
-  if (!lightboxId || !item) return null;
+  const select = (next: Item | undefined) => {
+    if (!next || next.id === item.id) return;
+    setTransform(origin); setFailed(false); drag.current = null; setDragging(false);
+    onSelect(next.id);
+    stageRef.current?.focus({ preventScroll: true });
+  };
+  const rate = async (rating: number) => {
+    if (ratingBusy.current) return;
+    ratingBusy.current = true;
+    try { await updateItem(item.id, { rating }); } catch (error) { reportError("无法保存评分", error); }
+    finally { ratingBusy.current = false; }
+  };
+  const filmStart = Math.max(0, Math.min(index - 2, items.length - 5));
 
-  const isMedia = item.kind === "image" || item.kind === "video";
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/90 fade-in flex items-center justify-center">
-      {/* 顶栏 */}
-      <div className="absolute top-0 inset-x-0 h-11 flex items-center gap-3 px-4 bg-gradient-to-b from-black/70 to-transparent z-10">
-        <span className="text-xs text-neutral-300 truncate max-w-[40%]">{item.name}</span>
-        <span className="text-[11px] text-neutral-500">{idx + 1} / {items.length}</span>
-        {item.width ? <span className="text-[11px] text-neutral-500">{item.width}×{item.height}</span> : null}
-        <div className="ml-auto flex items-center gap-2">
-          <Stars
-            value={item.rating}
-            onChange={(v) => {
-              patchItemLocal(item.id, { rating: v });
-              api(`/items/${item.id}`, { method: "PATCH", body: JSON.stringify({ rating: v }) });
-            }}
-            size={16}
-          />
-          <button className="btn" onClick={() => setShowInfo((v) => !v)}><Info size={14} /> 信息</button>
-          <button className="btn" onClick={() => useStore.getState().setDetail(item.id)}>详情</button>
-          <button className="btn" onClick={() => setZoom((z) => Math.min(8, z * 1.3))}><ZoomIn size={15} /></button>
-          <button className="btn" onClick={() => setZoom((z) => Math.max(0.2, z / 1.3))}><ZoomOut size={15} /></button>
-          <button className="btn" onClick={() => setLightbox(null)}><X size={16} /></button>
+  return <Dialog label="大图预览" className="lightbox-dialog" onClose={onClose}>
+    <div className="viewer" onKeyDown={(event) => {
+      if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof Element && event.target.closest("input, textarea, select, video, audio, [contenteditable]")) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault(); select(items[index + (event.key === "ArrowLeft" ? -1 : 1)]);
+      } else if (/^[0-5]$/.test(event.key)) { event.preventDefault(); void rate(Number(event.key)); }
+    }}>
+      <header className="viewer-header">
+        <div className="viewer-title"><small>素材预览 · {index + 1} / {items.length}</small><h2 title={item.name}>{item.name}</h2></div>
+        <div className="viewer-top-actions">
+          <a href={fileUrl(item.id)} download className="icon-button" aria-label="下载原文件" title="下载原文件"><Download size={17} /></a>
+          <button className="icon-button" aria-pressed={showInfo} onClick={() => setShowInfo(!showInfo)} aria-label="预览信息" title="预览信息"><Info size={18} /></button>
+          <button className="icon-button" aria-label="编辑素材详情" title="编辑素材详情" onClick={() => {
+            onClose(); useStore.getState().setDetail(item.id);
+          }}><PanelRightOpen size={18} /></button>
+          <button className="icon-button viewer-close" data-dialog-focus onClick={onClose} aria-label="关闭预览" title="关闭预览 (Esc)"><X size={20} /></button>
         </div>
+      </header>
+
+      <div className="viewer-body">
+        <div className="viewer-canvas">
+          <div ref={stageRef} tabIndex={-1} className={`viewer-stage ${image && zoom > 1 ? "can-pan" : ""} ${isDragging ? "is-dragging" : ""}`}
+            onPointerDown={(event) => {
+              if (!image || failed || zoom <= 1 || event.button !== 0 || !event.isPrimary) return;
+              drag.current = { pointer: event.pointerId, x: event.clientX, y: event.clientY, tx: transform.x, ty: transform.y };
+              event.currentTarget.setPointerCapture(event.pointerId); setDragging(true);
+            }} onPointerMove={(event) => {
+              const start = drag.current;
+              if (!start || start.pointer !== event.pointerId) return;
+              setTransform({ zoom, x: start.tx + event.clientX - start.x, y: start.ty + event.clientY - start.y });
+            }} onLostPointerCapture={() => { drag.current = null; setDragging(false); }}>
+            {failed ? <div className="viewer-unsupported"><PlaceholderThumb kind={item.kind} /><p>无法加载该素材的预览</p>
+              <a className="btn-secondary" download href={fileUrl(item.id)}><Download size={16} /> 下载原文件</a></div>
+              : image ? <img src={fileUrl(item.id)} key={item.id} alt={item.name} draggable={false}
+                onError={() => setFailed(true)} style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${zoom})`,
+                  maxWidth: item.width ? `min(96%, ${item.width * 2}px)` : undefined, maxHeight: item.height ? `min(96%, ${item.height * 2}px)` : undefined }} />
+              : item.kind === "video" ? <video key={item.id} src={fileUrl(item.id)} controls playsInline onError={() => setFailed(true)} />
+              : item.kind === "audio" ? <audio key={item.id} src={fileUrl(item.id)} controls onError={() => setFailed(true)} />
+              : <div className="viewer-unsupported"><PlaceholderThumb kind={item.kind} /><p>此文件格式不支持预览</p>
+                <a className="btn-secondary" download href={fileUrl(item.id)}><Download size={16} /> 下载原文件</a></div>}
+          </div>
+          {index > 0 && <button className="icon-button viewer-prev" aria-label="上一项" title="上一项 (←)" onClick={() => select(items[index - 1])}><ChevronLeft size={24} /></button>}
+          {index < items.length - 1 && <button className="icon-button viewer-next" aria-label="下一项" title="下一项 (→)" onClick={() => select(items[index + 1])}><ChevronRight size={24} /></button>}
+        </div>
+        {showInfo && <ViewerInfo key={item.id} item={item} onClose={() => setShowInfo(false)} />}
       </div>
 
-      {/* 图片 */}
-      <div
-        className="absolute inset-0 flex items-center justify-center overflow-hidden"
-        onWheel={(e) => {
-          e.preventDefault();
-          setZoom((z) => Math.max(0.2, Math.min(8, z * (e.deltaY < 0 ? 1.12 : 0.9))));
-        }}
-        onPointerDown={(e) => {
-          drag.current = { x: e.clientX, y: e.clientY, ox: offset.x, oy: offset.y };
-          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-        }}
-        onPointerMove={(e) => {
-          const d = drag.current;
-          if (d) setOffset({ x: d.ox + e.clientX - d.x, y: d.oy + e.clientY - d.y });
-        }}
-        onPointerUp={() => (drag.current = null)}
-        style={{ cursor: drag.current ? "grabbing" : "grab" }}
-      >
-        {isMedia ? (
-          item.kind === "video" ? (
-            <video
-              src={fileUrl(item.id)}
-              controls
-              autoPlay
-              className="max-w-[92vw] max-h-[86vh]"
-              style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
-            />
-          ) : (
-            <img
-              src={fileUrl(item.id)}
-              alt=""
-              draggable={false}
-              className="max-w-[92vw] max-h-[86vh] object-contain transition-transform duration-75"
-              style={{ transform: `translate(${offset.x}px, ${offset.y}px) scale(${zoom})` }}
-            />
-          )
-        ) : (
-          <div className="text-neutral-500">该格式暂不支持预览</div>
-        )}
-      </div>
-
-      {/* 右侧信息抽屉 */}
-      {showInfo && (
-        <div
-          className="absolute right-0 top-11 bottom-0 w-72 bg-panel/95 backdrop-blur-md border-l border-border/60 overflow-y-auto p-4 space-y-4 slide-in-right z-10"
-          onWheel={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-neutral-400 font-medium">图片信息</span>
-            <button className="text-neutral-500 hover:text-white" onClick={() => setShowInfo(false)}><X size={14} /></button>
-          </div>
-
-          {/* 快速打标 */}
-          <div>
-            <div className="text-[11px] text-neutral-500 flex items-center gap-1 mb-1.5"><TagIcon size={11} /> 标签</div>
-            <div className="flex flex-wrap gap-1 mb-1.5">
-              {item.tags.map((t) => (
-                <span key={t} className="inline-flex items-center gap-1 bg-violet-500/15 text-violet-200 text-[11px] px-1.5 py-0.5 rounded">
-                  {t}
-                  <button onClick={() => removeTag(t)} className="hover:text-white"><X size={10} /></button>
-                </span>
-              ))}
-              {item.tags.length === 0 && <span className="text-[11px] text-neutral-600">暂无标签</span>}
-            </div>
-            <input
-              className="input w-full"
-              placeholder="添加标签，回车确认"
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); addTag(tagInput); }
-                e.stopPropagation();
-              }}
-            />
-          </div>
-
-          {/* 基本信息 */}
-          <div className="space-y-1.5 text-[11px]">
-            <Row k="文件名" v={item.name} />
-            <Row k="类型" v={`${item.kind} · ${item.ext.toUpperCase()}`} />
-            <Row k="尺寸" v={item.width ? `${item.width}×${item.height}` : "—"} />
-            <Row k="大小" v={fmtSize(item.size)} />
-            <Row k="添加时间" v={new Date(item.addedAt).toLocaleString()} />
-            {item.duration != null && <Row k="时长" v={`${Math.round(item.duration)}s`} />}
-            {item.url ? <Row k="来源" v={item.url} /> : null}
-          </div>
-
-          {/* EXIF */}
-          {exif && Object.keys(exif).length > 0 && (
-            <div>
-              <div className="text-[11px] text-neutral-500 mb-1.5">EXIF</div>
-              <div className="space-y-1.5 text-[11px]">
-                {Object.entries(exif).map(([k, v]) => (
-                  <Row key={k} k={EXIF_LABELS[k] ?? k} v={String(v)} />
-                ))}
-              </div>
-            </div>
-          )}
+      <footer className="viewer-footer">
+        <div className="viewer-zoom">
+          {image && !failed && <>
+            <button className="icon-button" aria-label="缩小预览" disabled={zoom <= 1} onClick={() => setZoom(1 / 1.25)}><Minus size={17} /></button>
+            <output aria-label="预览缩放">{Math.round(zoom * 100)}%</output>
+            <button className="icon-button" aria-label="放大预览" disabled={zoom >= 8} onClick={() => setZoom(1.25)}><Plus size={17} /></button>
+            <button className="icon-button" aria-label="适应窗口" title="适应窗口" onClick={() => setTransform(origin)}><Maximize size={15} /></button>
+          </>}
         </div>
-      )}
-
-      {/* 左右切换 */}
-      {idx > 0 && (
-        <button className="absolute left-3 top-1/2 -translate-y-1/2 btn !p-2 bg-black/50 rounded-full" onClick={() => go(-1)}>
-          <ChevronLeft size={20} />
-        </button>
-      )}
-      {idx < items.length - 1 && (
-        <button className="absolute right-3 top-1/2 -translate-y-1/2 btn !p-2 bg-black/50 rounded-full" onClick={() => go(1)}>
-          <ChevronRight size={20} />
-        </button>
-      )}
-
-      <div className="absolute bottom-3 text-[11px] text-neutral-500">滚轮缩放 · 拖拽移动 · ← → 切换 · 0-5 评分 · Esc 关闭</div>
+        {items.length > 1 && <div className="viewer-filmstrip" aria-label="快速切换素材">
+          {items.slice(filmStart, filmStart + 5).map((thumb) => <button key={thumb.id} type="button" aria-label={`预览 ${thumb.name}`} aria-current={item.id === thumb.id ? "true" : undefined}
+            title={thumb.name} onClick={() => select(thumb)}><Thumb id={thumb.id} kind={thumb.kind} className="w-full h-full" fallbackSize={15} /></button>)}
+        </div>}
+        <div className="viewer-rating"><Stars value={item.rating} onChange={rate} size={17} /></div>
+      </footer>
     </div>
-  );
+  </Dialog>;
 }
 
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex gap-2">
-      <span className="text-neutral-500 shrink-0 w-16">{k}</span>
-      <span className="text-neutral-300 break-all">{v}</span>
-    </div>
-  );
-}
-
-function fmtSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+function ViewerInfo({ item, onClose }: { item: Item; onClose: () => void }) {
+  const [exif, setExif] = useState<Exif | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    api<{ exif: Exif | null }>(`/items/${item.id}`, { signal: controller.signal }).then(({ exif }) => setExif(exif)).catch(() => {
+      if (!controller.signal.aborted) setFailed(true);
+    });
+    return () => controller.abort();
+  }, [item.id]);
+  return <aside className="viewer-info" aria-label="预览信息">
+    <header><h3>素材信息</h3><button className="icon-button" aria-label="关闭预览信息" onClick={onClose}><X size={17} /></button></header>
+    <div className="detail-section"><h3>基本信息</h3><dl className="detail-rows">
+      <DataRow label="类型" value={`${KINDS[item.kind as keyof typeof KINDS] ?? item.kind} · ${item.ext.toUpperCase()}`} />
+      <DataRow label="尺寸" value={item.width && item.height ? `${item.width} × ${item.height}` : "—"} />
+      <DataRow label="大小" value={humanSize(item.size)} /><DataRow label="添加时间" value={fmtDate(item.addedAt)} />
+    </dl></div>
+    <div className="detail-section"><h3>标签</h3><TagEditor item={item} /></div>
+    {item.note && <div className="detail-section"><h3>注释</h3><p className="text-muted text-xs whitespace-pre-wrap break-words">{item.note}</p></div>}
+    {exif && Object.keys(exif).length > 0 && <div className="detail-section"><h3>EXIF</h3>
+      <dl className="detail-rows">{Object.entries(exif).map(([key, value]) => <DataRow key={key} label={EXIF_LABELS[key] ?? key} value={String(value)} />)}</dl>
+    </div>}
+    {failed && <p className="inline-error p-3">EXIF 信息暂不可用。</p>}
+  </aside>;
 }

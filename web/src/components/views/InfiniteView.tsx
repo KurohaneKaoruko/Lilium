@@ -1,40 +1,37 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Move } from "lucide-react";
 import { useStore } from "../../store/useStore";
-import { thumbUrl } from "../../api/client";
-import {
-  buildMosaic,
-  type MosaicLayout,
-  type WorldTile,
-} from "../../lib/infinite";
+import { buildMosaic, type WorldTile } from "../../lib/infinite";
 import {
   reflowCurve,
   PAN_INERTIA,
   WHEEL_SMOOTHING,
 } from "../../lib/wallMotion";
+import { isShortcutScope, shortcutMod } from "../../lib/workspace";
+import CanvasControls, { prefersReducedMotion } from "./CanvasControls";
+import { openAssetMenu, SelectionMark, Thumb } from "./shared";
+
+const MIN_ZOOM = .3;
+const MAX_ZOOM = 2.5;
 
 /**
- * 无限视图(全屏沉浸封面墙):
- *
- * - 周期点阵密铺:12×8 块精确铺满,素材循环取模,任何方向平移都无缝
- * - 相机:拖拽跟手,松手惯性滑行;滚轮离散步长指数平滑追帧;Ctrl+滚轮缩放
- * - 单击卡片:同块 11 卡按弹簧曲线让位重排,该卡放大为 6×6,镜头同步聚焦
- * - 双击打开大图;Esc 先收起再退出
- *
- * 渲染结构与运动模型:
- *   容器(裁剪) ← 镜头层(唯一 transform,每次相机写入直写) ← 瓦片(left/top/w/h)
- *   瓦片的重排动画由 JS 相机循环同帧驱动(与镜头同一条弹簧曲线),不靠 CSS 过渡,
- *   因此任何时刻读到的样式都是「当前帧位置」,多层动画永不脱节。
+ * 无限画布：镜头用 transform 平移、缩放，只有可见范围变化时才补发瓦片。
+ * 单击聚焦并重排本块，双击打开预览，Shift 拖拽框选。
  */
 export default function InfiniteView() {
   const items = useStore((s) => s.items);
   const selection = useStore((s) => s.selection);
+  const selectionMode = useStore((s) => s.selectionMode);
   const select = useStore((s) => s.select);
   const setLightbox = useStore((s) => s.setLightbox);
-  const setView = useStore((s) => s.setView);
+  const querySeq = useStore((s) => s.querySeq);
 
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
+  const rectRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const [zoom, setZoom] = useState(1);
+  const sizeBefore = useRef({ w: 0, h: 0 });
 
   // 相机状态用 ref(每帧直写 DOM,不走 React 状态 —— 与手势同频,零重渲染)
   const cam = useRef({ tx: 0, ty: 0, z: 1 });
@@ -47,9 +44,9 @@ export default function InfiniteView() {
 
   const dragRef = useRef<{
     x: number; y: number; tx: number; ty: number; moved: boolean;
-    lastT: number; vx: number; vy: number; px?: number; py?: number;
+    lastT: number; vx: number; vy: number; px?: number; py?: number; pointer: number; box: boolean;
   } | null>(null);
-  const lastClick = useRef<{ key: string; t: number } | null>(null);
+  const lastClick = useRef<{ id: string; x: number; y: number; t: number } | null>(null);
 
   /** 相机动画循环:目标驱动(惯性/滚轮/聚焦共用)。raf 字段实为 interval handle */
   const camAnim = useRef<{
@@ -175,6 +172,10 @@ export default function InfiniteView() {
       const c = cam.current;
       const endTx = size.w / 2 - wx * c.z;
       const endTy = size.h / 2 - wy * c.z;
+      if (prefersReducedMotion()) {
+        stopCamAnim(); c.tx = endTx; c.ty = endTy; applyCamera();
+        return;
+      }
       const dist = Math.hypot(endTx - c.tx, endTy - c.ty) / Math.max(c.z, 0.01);
       const ease = reflowCurve(dist);
       if (!camAnim.current) startCamAnim();
@@ -187,16 +188,17 @@ export default function InfiniteView() {
       s.ease = ease.ease;
       s.focusT0 = 0;
     },
-    [size, startCamAnim],
+    [size, startCamAnim, applyCamera],
   );
 
-  // 视口尺寸:容器挂载即观察(items 未就绪时组件早退占位,容器此时才真正出现)
-  const attachContainer = useCallback((el: HTMLDivElement | null) => {
-    containerRef.current = el;
+  useLayoutEffect(() => {
+    const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    const measure = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    return () => ro.disconnect();
   }, []);
 
   // 布局引擎实例(带真实纵横比,展开卡按原图比例显示)
@@ -204,11 +206,13 @@ export default function InfiniteView() {
     () => buildMosaic(items.map((it) => ({ id: it.id, aspect: it.width && it.height ? it.width / it.height : 1 }))),
     [items],
   );
+  const byId = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
 
   /** 刚发生过展开/收起 → 瓦片布局属性带弹簧过渡;起止状态稳定后移除 */
   const [reflowing, setReflowing] = useState(false);
   const reflowTimer = useRef<number | null>(null);
   const beginReflow = useCallback(() => {
+    if (prefersReducedMotion()) return;
     setReflowing(true);
     if (reflowTimer.current !== null) window.clearTimeout(reflowTimer.current);
     reflowTimer.current = window.setTimeout(
@@ -222,6 +226,7 @@ export default function InfiniteView() {
     },
     [],
   );
+  useEffect(() => () => stopCamAnim(), []);
   /** 展开/收起都走同一物理:重排 + 镜头弹簧聚焦;返回实际生效的目标 */
   const applyPicked = useCallback(
     (p: { bx: number; by: number; slot: number } | null) => {
@@ -245,21 +250,63 @@ export default function InfiniteView() {
     [layout, glideTo, beginReflow],
   );
 
-  // 首帧:按视口定缩放,把原点块放到中心(视口测量就绪即定位,不等 items)
-  const didCenterRef = useRef(false);
+  const center = useCallback(() => {
+    if (!size.w || !size.h) return;
+    stopCamAnim();
+    const z = Math.min(1.15, Math.max(.35, Math.min(size.h / 720, size.w / 850)));
+    const block = layout.blockCenter(0, 0);
+    cam.current = { z, tx: size.w / 2 - block.x * z, ty: size.h / 2 - block.y * z };
+    setZoom(z);
+    applyCamera();
+    forceRender((v) => v + 1);
+  }, [size, layout, applyCamera]);
+
+  useLayoutEffect(() => {
+    const last = sizeBefore.current;
+    sizeBefore.current = size;
+    if (!size.w || !size.h) return;
+    if (!last.w || !last.h) { center(); return; }
+    // 改变窗口宽度（例如打开侧栏）时，保持同一世界点在视口中心。
+    if (last.w !== size.w || last.h !== size.h) {
+      stopCamAnim();
+      cam.current.tx += (size.w - last.w) / 2;
+      cam.current.ty += (size.h - last.h) / 2;
+      applyCamera(); forceRender((v) => v + 1);
+    }
+  }, [size, center, applyCamera]);
+
   useEffect(() => {
-    if (didCenterRef.current || size.w < 100) return;
-    didCenterRef.current = true;
-    const z0 = Math.min(1.6, Math.max(0.5, size.h / 1000));
-    cam.current.z = z0;
-    cam.current.tx = size.w / 2;
-    cam.current.ty = size.h / 2;
+    setPicked(null);
+    lastClick.current = null;
+  }, [querySeq]);
+
+  useEffect(() => {
+    lastClick.current = null;
+    if (selectionMode && pickedRef.current) {
+      stopCamAnim();
+      setPicked(null);
+    }
+  }, [selectionMode]);
+
+  const adjustZoom = useCallback((factor: number, x = size.w / 2, y = size.h / 2) => {
+    const c = cam.current;
+    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, c.z * factor));
+    if (next === c.z) return;
+    stopCamAnim();
+    const scale = next / c.z;
+    c.tx = x - (x - c.tx) * scale;
+    c.ty = y - (y - c.ty) * scale;
+    c.z = next;
+    setZoom(next);
     applyCamera();
     forceRender((v) => v + 1);
   }, [size, applyCamera]);
 
   // 可见瓦片(picked/size/扩边请求变化时重算;平时相机平移直写 DOM,不重算)
   const tiles: WorldTile[] = useMemo(() => {
+    // 追加页或更新元数据时，保持已聚焦卡片的实例布局。
+    if (picked) layout.setExpanded(picked.bx, picked.by, picked.slot);
+    else layout.clearExpanded();
     const c = cam.current;
     const worldX0 = (0 - c.tx) / c.z;
     const worldY0 = (0 - c.ty) / c.z;
@@ -274,39 +321,49 @@ export default function InfiniteView() {
       spanY: 120 * c.z,
     };
     return next;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, size, picked, renderTick]);
 
-  // 键盘:Esc → 先收左栏,再收起展开卡,最后退出视图(顶栏固定,不参与)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (useStore.getState().lightboxId) return;
-      if (e.key === "Escape") {
-        const st = useStore.getState();
-        if (st.chromeLeft) {
-          st.setChromeLeft(false);
-          return;
-        }
-        if (pickedRef.current) applyPicked(null);
-        else setView("masonry");
-      }
+      if (e.key !== "Escape" || isShortcutScope(e) || useStore.getState().detailId || !pickedRef.current) return;
+      e.preventDefault();
+      applyPicked(null);
+      useStore.getState().clearSelection();
     };
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
-  }, [applyPicked, setView]);
+  }, [applyPicked]);
 
-  /** 墙面交互(拖拽/滚轮)→ 收回左栏 */
-  const wallInteract = useCallback(() => {
-    const st = useStore.getState();
-    if (!st.chromeHovering && st.chromeLeft) st.setChromeLeft(false);
-  }, []);
+  useEffect(() => {
+    const viewport = containerRef.current;
+    if (!viewport) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewport.clientHeight : 1;
+      if (e.ctrlKey || e.metaKey) {
+        const bounds = viewport.getBoundingClientRect();
+        adjustZoom(Math.exp(-e.deltaY * unit * .0022), e.clientX - bounds.left, e.clientY - bounds.top);
+        return;
+      }
+      const dx = (e.shiftKey ? e.deltaY : e.deltaX) * unit;
+      const dy = (e.shiftKey ? e.deltaX : e.deltaY) * unit;
+      if (prefersReducedMotion()) {
+        stopCamAnim(); cam.current.tx -= dx; cam.current.ty -= dy; applyCamera();
+        return;
+      }
+      if (!camAnim.current) startCamAnim();
+      camAnim.current!.focusDx = camAnim.current!.focusDy = null;
+      camAnim.current!.wx -= dx;
+      camAnim.current!.wy -= dy;
+    };
+    viewport.addEventListener("wheel", onWheel, { passive: false });
+    return () => viewport.removeEventListener("wheel", onWheel);
+  }, [adjustZoom, applyCamera, startCamAnim]);
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.isPrimary || useStore.getState().loading) return;
     stopCamAnim();
-    wallInteract();
+    containerRef.current?.focus({ preventScroll: true });
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {
@@ -315,16 +372,23 @@ export default function InfiniteView() {
     const c = cam.current;
     dragRef.current = {
       x: e.clientX, y: e.clientY, tx: c.tx, ty: c.ty, moved: false,
-      lastT: performance.now(), vx: 0, vy: 0,
+      lastT: performance.now(), vx: 0, vy: 0, pointer: e.pointerId, box: e.shiftKey,
     };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
-    if (!d) return;
+    if (!d || e.pointerId !== d.pointer) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
+    if (d.box) {
+      if (!d.moved || !rectRef.current) return;
+      const bounds = e.currentTarget.getBoundingClientRect();
+      Object.assign(rectRef.current.style, { display: "block", left: `${Math.min(d.x, e.clientX) - bounds.left}px`,
+        top: `${Math.min(d.y, e.clientY) - bounds.top}px`, width: `${Math.abs(dx)}px`, height: `${Math.abs(dy)}px` });
+      return;
+    }
     const now = performance.now();
     const dt = Math.max(now - d.lastT, 1) / 1000;
     // 速度低通(供惯性)
@@ -343,11 +407,27 @@ export default function InfiniteView() {
 
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
+    if (!d || e.pointerId !== d.pointer) return;
     dragRef.current = null;
-    if (!d) return;
+    if (rectRef.current) rectRef.current.style.display = "none";
+    if (d.moved) lastClick.current = null;
+    if (d.moved && d.box) {
+      const viewport = e.currentTarget.getBoundingClientRect();
+      const l = Math.max(viewport.left, Math.min(d.x, e.clientX));
+      const r = Math.min(viewport.right, Math.max(d.x, e.clientX));
+      const t = Math.max(viewport.top, Math.min(d.y, e.clientY));
+      const b = Math.min(viewport.bottom, Math.max(d.y, e.clientY));
+      const picked = new Set<string>();
+      worldRef.current?.querySelectorAll<HTMLElement>("[data-tile]").forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.left < r && rect.right > l && rect.top < b && rect.bottom > t && el.dataset.tile) picked.add(el.dataset.tile);
+      });
+      useStore.getState().selectMany([...picked]);
+      return;
+    }
     // 惯性:距离松手足够近且速度够大才滑
     const stale = performance.now() - d.lastT > PAN_INERTIA.staleReleaseMs;
-    if (d.moved && !stale && Math.hypot(d.vx, d.vy) >= PAN_INERTIA.minSpeed) {
+    if (d.moved && !stale && !prefersReducedMotion() && Math.hypot(d.vx, d.vy) >= PAN_INERTIA.minSpeed) {
       const vx = Math.max(-PAN_INERTIA.maxSpeed, Math.min(PAN_INERTIA.maxSpeed, d.vx));
       const vy = Math.max(-PAN_INERTIA.maxSpeed, Math.min(PAN_INERTIA.maxSpeed, d.vy));
       if (!camAnim.current) startCamAnim();
@@ -355,34 +435,38 @@ export default function InfiniteView() {
       camAnim.current!.vy = vy;
     }
     if (!d.moved) {
-      // 单击命中
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
-      const key = tileEl?.dataset.key;
-      if (!key) return;
-      const [bx, by, slot] = key.split(":").map(Number);
-      if (e.shiftKey) {
-        const id = tileEl.dataset.tile;
-        if (id) select(id, "range");
-        return;
-      }
-      if (e.ctrlKey || e.metaKey) {
-        const id = tileEl.dataset.tile;
-        if (id) select(id, "toggle");
+      const tileEl = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>("[data-tile]");
+      const id = tileEl?.dataset.tile;
+      if (useStore.getState().selectionMode) {
+        if (id) select(id, e.shiftKey && !e.ctrlKey && !e.metaKey ? "range" : "toggle");
         return;
       }
       const prev = lastClick.current;
-      const id = tileEl.dataset.tile;
-      if (prev && prev.key === key && Date.now() - prev.t < 350) {
-        // 双击(350ms 内同瓦片二次单击)→ 大图预览
+      if (!e.shiftKey && !e.ctrlKey && !e.metaKey && prev && Date.now() - prev.t < 360 && Math.hypot(prev.x - e.clientX, prev.y - e.clientY) < 12) {
         lastClick.current = null;
-        if (id) {
-          select(id, "set");
-          setLightbox(id);
-        }
+        select(prev.id, "set"); setLightbox(prev.id);
         return;
       }
-      lastClick.current = { key, t: Date.now() };
+      // 单击命中
+      const key = tileEl?.dataset.key;
+      if (!key || !id) {
+        lastClick.current = null;
+        useStore.getState().clearSelection();
+        if (pickedRef.current) applyPicked(null);
+        return;
+      }
+      const [bx, by, slot] = key.split(":").map(Number);
+      if (e.shiftKey) {
+        select(id, "range");
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        select(id, "toggle");
+        return;
+      }
+      lastClick.current = { id, x: e.clientX, y: e.clientY, t: Date.now() };
+      select(id, "set");
+      if (useStore.getState().detailId) useStore.getState().setDetail(id);
       if (pickedRef.current?.bx === bx && pickedRef.current?.by === by && pickedRef.current?.slot === slot) {
         applyPicked(null);
         return;
@@ -390,55 +474,6 @@ export default function InfiniteView() {
       applyPicked({ bx, by, slot });
     }
   };
-
-  const onWheel = (e: React.WheelEvent) => {
-    wallInteract();
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      const f = Math.exp(-e.deltaY * 0.0022);
-      cam.current.z = Math.min(2.5, Math.max(0.3, cam.current.z * f));
-      applyCamera();
-      return;
-    }
-    const dx = e.shiftKey ? e.deltaY : e.deltaX;
-    const dy = e.shiftKey ? e.deltaX : e.deltaY;
-    if (!camAnim.current) startCamAnim();
-    camAnim.current!.wx -= dx;
-    camAnim.current!.wy -= dy;
-  };
-
-  /** 兜底:容器上原生 dblclick(合成单击检测可能因瓦片重排丢序)也打开灯箱 */
-  const onContainerDoubleClick = (e: React.MouseEvent) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const tileEl = el?.closest("[data-tile]") as HTMLElement | null;
-    const id = tileEl?.dataset.tile;
-    if (!id) return;
-    e.stopPropagation();
-    select(id, "set");
-    setLightbox(id);
-  };
-
-  const onTileDoubleClick = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    select(id, "set");
-    setLightbox(id);
-  };
-
-  // 让位曲线:块内重排的最大位移决定时长;所有瓦片共用一条(线性系统,同曲线同终点)
-  const reflow = useMemo(() => {
-    if (!picked) return null;
-    // 预热曲线缓存(块内位移 ≤ 块宽)
-    return reflowCurve(816);
-  }, [picked]);
-
-
-  if (items.length === 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm bg-[#0a0b0f]">
-        没有可显示的图片
-      </div>
-    );
-  }
 
   // 让位弹簧的时长/曲线;调暗与描边过渡跟它同频,视觉上一步到位不脱节
   const settle = reflowCurve(816).durationMs | 0;
@@ -448,28 +483,39 @@ export default function InfiniteView() {
     : undefined;
 
   return (
-    <div className="relative flex-1 overflow-hidden bg-[#0a0b0f] no-select">
+    <div className="canvas-shell canvas-infinite no-select">
       <div
-        ref={attachContainer}
-        className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing overflow-hidden"
+        ref={containerRef}
+        className="canvas-viewport"
+        role="group"
+        tabIndex={0}
+        aria-label="无限画布，可用方向键平移，加号与减号缩放"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-        onWheel={onWheel}
-        onDoubleClick={onContainerDoubleClick}
+        onLostPointerCapture={() => { dragRef.current = null; if (rectRef.current) rectRef.current.style.display = "none"; }}
+        onKeyDown={(event) => {
+          if (event.ctrlKey || event.metaKey || event.altKey || event.target !== event.currentTarget) return;
+          const offset = { ArrowUp: [0, 75], ArrowDown: [0, -75], ArrowLeft: [75, 0], ArrowRight: [-75, 0] }[event.key];
+          if (offset) { event.preventDefault(); stopCamAnim(); cam.current.tx += offset[0]; cam.current.ty += offset[1]; applyCamera(); }
+          if (event.key === "+" || event.key === "=" || event.key === "-") {
+            event.preventDefault(); adjustZoom(event.key === "-" ? 1 / 1.2 : 1.2);
+          }
+        }}
       >
         <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
           {tiles.map((t) => {
             const key = `${t.blockX}:${t.blockY}:${t.slot}`;
             const isPicked = !!t.expanded;
             const selected = selection.has(t.id);
+            const item = byId.get(t.id);
+            if (!item) return null;
             return (
               <div
                 key={key}
                 data-tile={t.id}
                 data-key={key}
-                className={`absolute tile-outer ${isPicked ? "" : ""}`}
+                className="absolute tile-outer"
                 style={{
                   left: t.x,
                   top: t.y,
@@ -478,42 +524,33 @@ export default function InfiniteView() {
                   zIndex: isPicked ? 20 : selected ? 5 : 1,
                   transition: tileTransition,
                 }}
-                onDoubleClick={(e) => onTileDoubleClick(e, t.id)}
+                title={item.name}
+                onContextMenu={(event) => openAssetMenu(event, item.id)}
               >
                 <div
                   data-picked={isPicked ? "1" : "0"}
-                  className={`absolute inset-0 overflow-hidden pointer-events-auto tile-wrap ${isPicked ? "!cursor-default" : ""}`}
+                  data-selected={selected ? "1" : "0"}
+                  className="tile-wrap"
                   style={{
-                    transition: picked
-                      ? `filter ${settle}ms ${easeCss}, box-shadow ${settle}ms ${easeCss}, border-radius ${settle}ms ${easeCss}`
-                      : "none",
-                    filter: picked && !isPicked ? "brightness(0.72)" : "none",
-                    borderRadius: isPicked ? 3 : 0,
-                    boxShadow: isPicked
-                      ? "0 0 0 1.5px rgba(255,255,255,.95), 0 0 0 5px rgba(255,255,255,.14), 0 24px 80px rgba(0,0,0,.6)"
-                      : selected
-                        ? "inset 0 0 0 2px rgba(167,139,250,.6)"
-                        : "none",
+                    transition: `filter ${settle}ms ${easeCss}`,
+                    filter: picked && !isPicked && !selected ? "brightness(0.76)" : "none",
                   }}
                 >
-                  <img
-                    src={thumbUrl(t.id)}
-                    alt=""
-                    loading="lazy"
-                    draggable={false}
-                    className="w-full h-full object-cover pointer-events-none"
-                    style={{ backgroundColor: "#15171c" }}
-                  />
+                  <Thumb id={t.id} kind={item.kind} name={item.name} className="w-full h-full pointer-events-none" contain={isPicked} />
+                  {isPicked && <span className="tile-label truncate">{item.name}</span>}
+                  <SelectionMark selected={selected} />
                 </div>
               </div>
             );
           })}
         </div>
+        <div className="selection-rectangle" ref={rectRef} />
       </div>
-
-      {/* 顶部/底部渐隐遮罩 */}
-      <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/50 to-transparent pointer-events-none" />
-      <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
+      <div className="canvas-shade" />
+      <p className="canvas-tip"><Move size={14} /><span className="canvas-help-full">拖动平移 · {shortcutMod}+滚轮缩放 · Shift 拖动框选</span><span className="canvas-help-short">拖动画布</span></p>
+      <CanvasControls zoom={zoom} min={MIN_ZOOM} max={MAX_ZOOM} onZoom={adjustZoom} onReset={() => {
+        setPicked(null); useStore.getState().clearSelection(); center();
+      }} />
     </div>
   );
 }

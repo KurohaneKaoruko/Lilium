@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type Folder, type Item, type LibraryInfo, type SmartFolder, type Tag } from "../api/client";
+import { reportError } from "../lib/feedback";
 
 export type ViewMode = "grid" | "masonry" | "list" | "infinite" | "collections";
 export type SortKey = "addedAt" | "createdAt" | "name" | "size" | "width" | "height" | "rating" | "duration" | "random";
@@ -37,22 +38,23 @@ interface State {
 
   filters: Filters;
   view: ViewMode;
-  /** 沉浸视图:左侧完整侧栏是否张开(收起 = 48px 图标轨);顶栏固定常驻 */
-  chromeLeft: boolean;
-  /** 指针正悬停在悬浮面板上(阻止自动收起) */
-  chromeHovering: boolean;
-  setChromeLeft: (v: boolean) => void;
-  zoom: number; // grid 尺寸 / masonry 列宽 / infinite 初始视野
+  zoom: number; // grid / masonry thumbnail size
   sort: SortKey;
   asc: boolean;
 
   items: Item[];
   total: number;
   loading: boolean;
+  loadingMore: boolean;
+  importing: boolean;
+  error: string | null;
+  pageError: string | null;
+  metaError: string | null;
   querySeq: number;
   randomSeed: number;
 
   selection: Set<string>;
+  selectionMode: boolean;
   anchorId: string | null;
   detailId: string | null;
   lightboxId: string | null;
@@ -64,11 +66,15 @@ interface State {
   fetchItems: (append?: boolean) => Promise<void>;
   loadMore: () => Promise<void>;
   setFilters: (f: Partial<Filters>) => void;
+  setSearch: (q: string, immediate?: boolean) => void;
   resetFilters: () => void;
+  resetLibrary: () => Promise<void>;
   setView: (v: ViewMode) => void;
   setZoom: (z: number) => void;
   setSort: (s: SortKey, asc?: boolean) => void;
   select: (id: string, mode: "set" | "toggle" | "range" | "add") => void;
+  setSelectionMode: (enabled: boolean) => void;
+  selectMany: (ids: string[]) => void;
   selectAll: () => void;
   clearSelection: () => void;
   setDetail: (id: string | null) => void;
@@ -99,6 +105,10 @@ export const defaultFilters: Filters = {
   createdTo: 0,
   notTags: [],
 };
+
+export const THUMBNAIL_MIN = 110;
+export const THUMBNAIL_MAX = 420;
+export const THUMBNAIL_DEFAULT = 208;
 
 /**
  * 应用智能文件夹保存的查询到当前筛选（保持筛选器其余部分不动）。
@@ -138,6 +148,36 @@ export function filtersFromQuery(query: Record<string, unknown> | null | undefin
 }
 
 let seq = 0;
+let metaSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let itemRequest: AbortController | undefined;
+const preferenceKey = "lilium.workspace.preferences";
+const validViews: ViewMode[] = ["grid", "masonry", "list", "infinite", "collections"];
+const validSorts: SortKey[] = ["addedAt", "createdAt", "name", "size", "width", "height", "rating", "duration", "random"];
+type WorkspacePreferences = Pick<State, "view" | "zoom" | "sort" | "asc">;
+const clampThumbnailSize = (zoom: number) => Math.round(Math.max(THUMBNAIL_MIN, Math.min(THUMBNAIL_MAX, zoom)));
+
+function readWorkspacePreferences(): Partial<WorkspacePreferences> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(preferenceKey) ?? "{}") as Partial<WorkspacePreferences> | null;
+    if (!parsed) return {};
+    return {
+      view: parsed.view && validViews.includes(parsed.view) ? parsed.view : undefined,
+      zoom: typeof parsed.zoom === "number" && Number.isFinite(parsed.zoom) ? clampThumbnailSize(parsed.zoom) : undefined,
+      sort: parsed.sort && validSorts.includes(parsed.sort) ? parsed.sort : undefined,
+      asc: typeof parsed.asc === "boolean" ? parsed.asc : undefined,
+    };
+  } catch { return {}; }
+}
+const preferences = typeof window === "undefined" ? {} : readWorkspacePreferences();
+function nextItemRequest() {
+  itemRequest?.abort();
+  itemRequest = new AbortController();
+  return itemRequest;
+}
+const emptySelection = () => ({ selection: new Set<string>(), anchorId: null });
+const selectionAndPanels = () => ({ ...emptySelection(), selectionMode: false, lightboxId: null, detailId: null });
+const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export const useStore = create<State>((set, get) => ({
   info: null,
@@ -146,39 +186,53 @@ export const useStore = create<State>((set, get) => ({
   smartFolders: [],
 
   filters: { ...defaultFilters },
-  view: "infinite",
-  chromeLeft: false,
-  chromeHovering: false,
-  zoom: 240,
-  sort: "addedAt",
-  asc: false,
+  view: preferences.view ?? "infinite",
+  zoom: preferences.zoom ?? THUMBNAIL_DEFAULT,
+  sort: preferences.sort ?? "addedAt",
+  asc: preferences.asc ?? false,
 
   items: [],
   total: 0,
-  loading: false,
+  loading: true,
+  loadingMore: false,
+  importing: false,
+  error: null,
+  pageError: null,
+  metaError: null,
   querySeq: 0,
   randomSeed: 1,
 
   selection: new Set(),
+  selectionMode: false,
   anchorId: null,
   detailId: null,
   lightboxId: null,
   similarIds: null,
 
   refreshMeta: async () => {
-    const [info, folders, tags, smartFolders] = await Promise.all([
-      api<LibraryInfo>("/info"),
-      api<Folder[]>("/folders"),
-      api<Tag[]>("/tags"),
-      api<SmartFolder[]>("/smart-folders"),
-    ]);
-    set({ info, folders, tags, smartFolders });
+    const mySeq = ++metaSeq;
+    try {
+      const [info, folders, tags, smartFolders] = await Promise.all([
+        api<LibraryInfo>("/info"), api<Folder[]>("/folders"),
+        api<Tag[]>("/tags"), api<SmartFolder[]>("/smart-folders"),
+      ]);
+      if (mySeq === metaSeq) set({ info, folders, tags, smartFolders, metaError: null });
+    } catch (error) {
+      if (mySeq === metaSeq) set({ metaError: errorMessage(error) });
+    }
   },
 
   fetchItems: async (append = false) => {
     const st = get();
+    if (append && (st.loading || st.loadingMore || st.items.length >= st.total || st.similarIds)) return;
+    clearTimeout(searchTimer);
     const mySeq = ++seq;
-    set({ loading: true });
+    const request = nextItemRequest();
+    const randomSeed = append || st.sort !== "random" ? st.randomSeed : Date.now() % 100000000;
+    set(append ? { loadingMore: true, pageError: null } : {
+      loading: true, loadingMore: false, error: null, pageError: null, similarIds: null,
+      querySeq: st.querySeq + 1, randomSeed,
+    });
     try {
       const f = st.filters;
       const params = new URLSearchParams();
@@ -197,7 +251,7 @@ export const useStore = create<State>((set, get) => ({
         params.set("color", f.color);
         params.set("colorTolerance", String(f.colorTolerance));
       }
-      if (f.q) params.set("q", f.q);
+      if (f.q.trim()) params.set("q", f.q.trim());
       if (f.trash) params.set("trash", "true");
       if (f.untagged) params.set("untagged", "true");
       if (f.unfiled) params.set("unfiled", "true");
@@ -207,49 +261,73 @@ export const useStore = create<State>((set, get) => ({
       params.set("offset", String(offset));
       params.set("limit", "200");
       // 随机排序：每次全新查询换种子（洗牌），追加加载沿用当前种子保证分页连续
-      if (st.sort === "random") {
-        params.set("seed", append ? String(st.randomSeed) : String(Date.now() % 100000000));
-        if (!append) set({ randomSeed: Date.now() % 100000000 });
-      }
+      if (st.sort === "random") params.set("seed", String(randomSeed));
 
-      const res = await api<{ items: Item[]; total: number }>(`/items?${params}`);
+      const res = await api<{ items: Item[]; total: number }>(`/items?${params}`, { signal: request.signal });
       if (mySeq !== seq) return; // 过期响应
-      set({
-        items: append ? [...st.items, ...res.items] : res.items,
-        total: res.total,
-        loading: false,
+      const current = get();
+      if (append) {
+        const loaded = new Set(current.items.map((item) => item.id));
+        const next = res.items.filter((item) => !loaded.has(item.id));
+        set({ items: [...current.items, ...next], total: res.total, loadingMore: false,
+          pageError: next.length ? null : "素材列表已变化，请刷新后重试" });
+      } else {
+        const valid = new Set(res.items.map((item) => item.id));
+        set({ items: res.items, total: res.total, loading: false,
+          selectionMode: !!res.items.length && current.selectionMode,
+          selection: new Set([...current.selection].filter((id) => valid.has(id))),
+          anchorId: current.anchorId && valid.has(current.anchorId) ? current.anchorId : null,
+          detailId: current.detailId && valid.has(current.detailId) ? current.detailId : null,
+          lightboxId: current.lightboxId && valid.has(current.lightboxId) ? current.lightboxId : null });
+      }
+    } catch (error) {
+      if (mySeq !== seq) return;
+      set(append ? { loadingMore: false, pageError: errorMessage(error) } : {
+        items: [], total: 0, loading: false, error: errorMessage(error), ...selectionAndPanels(),
       });
-    } catch (e) {
-      if (mySeq === seq) set({ loading: false });
-      console.error(e);
     }
   },
 
   loadMore: async () => {
-    const { items, total, loading } = get();
-    if (loading || items.length >= total) return;
     await get().fetchItems(true);
   },
 
   setFilters: (f) => {
-    set({
-      filters: { ...get().filters, ...f },
-      selection: new Set(),
-      items: f.smartId !== undefined || Object.keys(f).some((k) => k !== "smartId") ? get().items : get().items,
-    });
+    set({ filters: { ...get().filters, ...f }, ...selectionAndPanels() });
     get().fetchItems();
   },
 
-  resetFilters: () => {
-    set({ filters: { ...defaultFilters }, selection: new Set() });
-    get().fetchItems();
+  setSearch: (q, immediate = false) => {
+    const st = get();
+    if (q === st.filters.q && !immediate) return;
+    clearTimeout(searchTimer);
+    seq++;
+    itemRequest?.abort();
+    set({ filters: { ...st.filters, q }, view: st.view === "collections" && q.trim() ? "masonry" : st.view,
+      loading: true, loadingMore: false, error: null,
+      pageError: null, similarIds: null, ...selectionAndPanels() });
+    if (immediate) get().fetchItems();
+    else searchTimer = setTimeout(() => get().fetchItems(), 280);
   },
 
-  setView: (v) => set({ view: v }),
-  setChromeLeft: (v) => set({ chromeLeft: v }),
-  setZoom: (z) => set({ zoom: Math.max(80, Math.min(560, z)) }),
+  resetFilters: () => get().setFilters(defaultFilters),
+
+  resetLibrary: async () => {
+    set({ filters: { ...defaultFilters }, info: null, folders: [], tags: [], smartFolders: [],
+      items: [], total: 0, metaError: null, ...selectionAndPanels() });
+    await Promise.all([get().refreshMeta(), get().fetchItems()]);
+  },
+
+  setView: (view) => {
+    if (view === get().view) return;
+    set(view === "collections" ? { view, ...selectionAndPanels() } : { view });
+  },
+  setZoom: (zoom) => { if (Number.isFinite(zoom)) set({ zoom: clampThumbnailSize(zoom) }); },
   setSort: (s, asc) => {
-    set({ sort: s, asc: asc ?? get().asc });
+    const st = get();
+    const next = asc ?? st.asc;
+    if (s === st.sort && next === st.asc && s !== "random") return;
+    set({ sort: s, asc: next });
     get().fetchItems();
   },
 
@@ -279,22 +357,37 @@ export const useStore = create<State>((set, get) => ({
     set({ selection: next });
   },
 
+  setSelectionMode: (enabled) => {
+    const st = get();
+    if (enabled === st.selectionMode || (enabled && (st.loading || !st.items.length || st.view === "collections"))) return;
+    set(enabled ? { selectionMode: true, detailId: null } : { selectionMode: false, ...emptySelection() });
+  },
   selectAll: () => set({ selection: new Set(get().items.map((i) => i.id)) }),
-  clearSelection: () => set({ selection: new Set() }),
+  selectMany: (ids) => set({ selection: new Set(ids), anchorId: ids[0] ?? null }),
+  clearSelection: () => set(emptySelection()),
   setDetail: (id) => set({ detailId: id }),
   setLightbox: (id) => set({ lightboxId: id }),
 
   showSimilar: async (id) => {
+    clearTimeout(searchTimer);
+    const mySeq = ++seq;
+    const request = nextItemRequest();
+    set({ loading: true, loadingMore: false, error: null, pageError: null });
     try {
-      const res = await api<{ items: Item[] }>(`/items/${id}/similar`);
+      const res = await api<{ items: Item[] }>(`/items/${id}/similar`, { signal: request.signal });
+      if (mySeq !== seq) return;
       set({
         similarIds: res.items.map((i) => i.id),
+        querySeq: get().querySeq + 1,
         items: res.items,
         total: res.items.length,
-        selection: new Set(),
+        loading: false,
+        ...selectionAndPanels(),
       });
-    } catch (e) {
-      console.error(e);
+    } catch (error) {
+      if (mySeq !== seq) return;
+      set({ loading: false });
+      reportError("无法查找相似素材", error);
     }
   },
 
@@ -309,9 +402,19 @@ export const useStore = create<State>((set, get) => ({
     }),
 
   removeItemLocal: (id) => {
-    const items = get().items.filter((i) => i.id !== id);
-    const sel = new Set(get().selection);
-    sel.delete(id);
-    set({ items, total: Math.max(0, get().total - 1), selection: sel });
+    const st = get();
+    const items = st.items.filter((i) => i.id !== id);
+    const selection = new Set(st.selection);
+    selection.delete(id);
+    set({ items, total: Math.max(0, st.total - (st.items.length - items.length)), selection,
+      similarIds: st.similarIds?.filter((itemId) => itemId !== id) ?? null,
+      detailId: st.detailId === id ? null : st.detailId, lightboxId: st.lightboxId === id ? null : st.lightboxId,
+      anchorId: st.anchorId === id ? null : st.anchorId });
   },
 }));
+
+useStore.subscribe(({ view, zoom, sort, asc }, previous) => {
+  if (view === previous.view && zoom === previous.zoom && sort === previous.sort && asc === previous.asc) return;
+  try { localStorage.setItem(preferenceKey, JSON.stringify({ view, zoom, sort, asc })); }
+  catch { /* Storage may be unavailable; the current session still works. */ }
+});

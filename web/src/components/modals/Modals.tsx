@@ -1,49 +1,97 @@
-import { useEffect, useState } from "react";
-import { Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil, Link2, FolderOpen, Save } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Ellipsis, Eye, PanelRightOpen, Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil, Link2, FolderOpen, Plus, Save, X } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { api, humanSize } from "../../api/client";
+import { notify, reportError } from "../../lib/feedback";
+import { formatCount, shortcutMod } from "../../lib/workspace";
 import { Thumb } from "../views/shared";
+import { Modal } from "../ui/Dialog";
+import NameDialog from "../ui/NameDialog";
+import Popover from "../ui/Popover";
 
 /** 批量操作栏（选中后底部浮现） */
 export function SelectionBar() {
   const selection = useStore((s) => s.selection);
-  const clearSelection = useStore((s) => s.clearSelection);
-  const fetchItems = useStore((s) => s.fetchItems);
-  const refreshMeta = useStore((s) => s.refreshMeta);
+  const selectionMode = useStore((s) => s.selectionMode);
+  const loading = useStore((s) => s.loading);
+  const items = useStore((s) => s.items);
   const trash = useStore((s) => s.filters.trash);
-  const [visible, setVisible] = useState(false);
-
-  useEffect(() => {
-    setVisible(selection.size > 0);
-  }, [selection]);
-
-  if (!visible) return null;
+  const folders = useStore((s) => s.folders);
+  const [menu, setMenu] = useState(false);
+  const [tagging, setTagging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [destination, setDestination] = useState("");
+  const anchor = useRef<HTMLButtonElement>(null);
   const ids = [...selection];
+  const selectedSize = useMemo(() => selection.size ? items.reduce((sum, item) => selection.has(item.id) ? sum + item.size : sum, 0) : 0, [items, selection]);
+  if ((!selection.size && !selectionMode) || loading) return null;
+  const closeMenu = () => { anchor.current?.focus(); setMenu(false); };
 
-  const act = async (body: Record<string, unknown>) => {
-    await api("/batch", { method: "POST", body: JSON.stringify({ ids, ...body }) });
-    clearSelection();
-    fetchItems();
-    refreshMeta();
+  const act = async (action: string, fields: Record<string, unknown> = {}) => {
+    await api("/batch", { method: "POST", body: JSON.stringify({ ids, action, ...fields }) });
+    const st = useStore.getState();
+    st.clearSelection();
+    await Promise.all([st.fetchItems(), st.refreshMeta()]);
+    const message: Record<string, string> = { trash: "已移到回收站", restore: "已恢复素材", purge: "已彻底删除", move: "已移动素材", tag: "已添加标签", rating: "已更新评分" };
+    notify(`${message[action]} · ${formatCount(ids.length)} 项`);
+  };
+  const run = async (action: string, fields: Record<string, unknown> = {}) => {
+    if (busy) return;
+    closeMenu();
+    setBusy(true);
+    try { await act(action, fields); }
+    catch (error) { reportError("批量操作失败", error); }
+    finally { setBusy(false); }
   };
 
   return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-40 bg-panel2/95 border border-border rounded-full shadow-2xl px-3 py-1.5 flex items-center gap-1 pop-in backdrop-blur">
-      <span className="text-xs text-violet-300 px-2">{ids.length} 项已选</span>
-      <div className="w-px h-4 bg-border mx-1" />
-      <button className="btn" onClick={() => { const t = prompt("标签名："); if (t?.trim()) act({ action: "tag", tag: t.trim() }); }}><Tags size={13} /> 标签</button>
-      <button className="btn" onClick={() => act({ action: "rating", rating: 5 })}><Star size={13} /> 5★</button>
-      <button className="btn" onClick={() => act({ action: "rating", rating: 0 })}><Star size={13} /> 清除</button>
-      {trash ? (
-        <>
-          <button className="btn" onClick={() => act({ action: "restore" })}><RotateCcw size={13} /> 还原</button>
-          <button className="btn !text-red-400" onClick={() => { if (confirm(`彻底删除 ${ids.length} 项？`)) act({ action: "purge" }); }}><Trash2 size={13} /> 彻底删除</button>
-        </>
-      ) : (
-        <button className="btn !text-red-400" onClick={() => act({ action: "trash" })}><Trash2 size={13} /> 删除</button>
-      )}
-      <div className="w-px h-4 bg-border mx-1" />
-      <button className="btn" onClick={clearSelection}>取消</button>
+    <div className="selection-dock" role="group" aria-label="已选素材的操作">
+      <span className="selection-summary" aria-live="polite">
+        <strong className="selection-count">{ids.length ? `已选 ${formatCount(ids.length)} 项` : "多选模式"}</strong>
+        {ids.length ? <small className="selection-size" title="所选素材总大小">{humanSize(selectedSize)}</small>
+          : <small>点按素材以选择</small>}
+      </span>
+      {ids.length === 0 && <button className="btn-secondary select-loaded" onClick={() => useStore.getState().selectAll()} aria-label="全选已载入的素材">全选已载入</button>}
+      {ids.length === 1 && <>
+        <button className="btn selection-preview" aria-label="预览所选素材" title="预览所选素材" onClick={() => useStore.getState().setLightbox(ids[0])}><Eye size={16} /><span>预览</span></button>
+        <button className="btn" aria-label="查看详情" title="查看详情" onClick={() => useStore.getState().setDetail(ids[0])}><PanelRightOpen size={16} /><span>详情</span></button>
+      </>}
+      {ids.length > 0 && (trash ? <button className="btn" disabled={busy} aria-label="还原所选素材" title="还原所选素材" onClick={() => void run("restore")}><RotateCcw size={16} /><span>还原</span></button>
+        : <button className="btn is-danger" disabled={busy} aria-label="将所选素材移到回收站" title="移到回收站" onClick={() => void run("trash")}><Trash2 size={16} /><span>回收站</span></button>)}
+      {ids.length > 0 && <button ref={anchor} className="icon-button" type="button" aria-label="更多素材操作" title="更多素材操作" aria-haspopup="dialog" aria-expanded={menu}
+        onClick={() => { setDestination(""); setMenu(!menu); }}><Ellipsis size={18} /></button>}
+      {menu && ids.length > 0 && <Popover anchor={anchor} label="更多素材操作" onClose={() => setMenu(false)} className="action-menu">
+        <button className="menu-row" onClick={() => { closeMenu(); useStore.getState().selectAll(); }}>全选已载入的素材</button>
+        {trash ? <button className="menu-row is-danger" disabled={busy} onClick={() => {
+          if (confirm(`彻底删除 ${formatCount(ids.length)} 项素材？此操作无法撤销。`)) void run("purge");
+        }}><Trash2 size={16} />彻底删除</button> : <>
+          <button className="menu-row" onClick={() => { closeMenu(); setTagging(true); }}><Tags size={16} />添加标签…</button>
+          {ids.length > 1 && <button className="menu-row" onClick={() => {
+            closeMenu(); window.dispatchEvent(new CustomEvent("lilium:batch-rename", { detail: { ids } }));
+          }}><Pencil size={16} />批量重命名…</button>}
+          <div className="menu-divider" />
+          <div className="p-2 space-y-2">
+            <label className="field-label"><span className="flex items-center gap-1.5"><Star size={14} />批量评分</span>
+              <select className="input" value="" onChange={(event) => void run("rating", { rating: Number(event.target.value) })}>
+                <option value="" disabled>选择评分</option>
+                {[0, 1, 2, 3, 4, 5].map((rating) => <option key={rating} value={rating}>{rating ? `${rating} 星` : "清除评分"}</option>)}
+              </select>
+            </label>
+            <label className="field-label">移动到
+              <select className="input" value={destination} onChange={(event) => setDestination(event.target.value)}>
+                <option value="">未分类</option>{folders.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}
+              </select>
+            </label>
+            <button className="btn-secondary w-full" disabled={busy} onClick={() => void run("move", { folderId: destination })}>移动素材</button>
+          </div>
+        </>}
+      </Popover>}
+      <button className="icon-button" onClick={() => {
+        setMenu(false);
+        const store = useStore.getState();
+        if (ids.length) store.clearSelection(); else store.setSelectionMode(false);
+      }} aria-label={ids.length ? "取消选择" : "退出多选"} title={ids.length ? "取消选择" : "退出多选"}><X size={17} /></button>
+      {tagging && <NameDialog title="添加标签" onSave={(tag) => act("tag", { tag })} onClose={() => setTagging(false)} />}
     </div>
   );
 }
@@ -51,15 +99,16 @@ export function SelectionBar() {
 /** 查重弹窗 */
 export function DuplicatesModal({ onClose }: { onClose: () => void }) {
   const [groups, setGroups] = useState<{ reason: string; items: { id: string; name: string; size: number }[] }[] | null>(null);
+  const [error, setError] = useState("");
   useEffect(() => {
-    api<{ groups: { reason: string; items: { id: string; name: string; size: number }[] }[] }>("/duplicates").then((d) => setGroups(d.groups));
+    api<{ groups: NonNullable<typeof groups> }>("/duplicates").then((d) => setGroups(d.groups)).catch((error: Error) => setError(error.message));
   }, []);
   return (
     <Modal title="重复文件查找" onClose={onClose} icon={<Wand2 size={14} />}>
-      {!groups ? (
-        <div className="text-xs text-neutral-500 p-4">分析中…</div>
+      {error ? <p className="inline-error" role="alert">无法查找重复文件：{error}</p> : !groups ? (
+        <div className="text-xs text-muted p-4" role="status">正在分析重复素材…</div>
       ) : groups.length === 0 ? (
-        <div className="text-xs text-neutral-500 p-4">未发现重复文件 🎉</div>
+        <div className="text-sm text-muted p-4">未发现重复文件。</div>
       ) : (
         <div className="space-y-4">
           {groups.map((g, gi) => (
@@ -75,7 +124,7 @@ export function DuplicatesModal({ onClose }: { onClose: () => void }) {
                 ))}
               </div>
             </div>
-          ))}          <p className="text-[11px] text-neutral-600">提示：在重复项上右键 → 删除，可清理多余副本。</p>
+           ))}
         </div>
       )}
     </Modal>
@@ -94,6 +143,7 @@ export function ImportPathModal({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const inputId = useId();
   const refreshMeta = useStore((s) => s.refreshMeta);
   const fetchItems = useStore((s) => s.fetchItems);
   const folderId = useStore((s) => s.filters.folderId);
@@ -158,32 +208,27 @@ export function ImportPathModal({
   };
 
   return (
-    <Modal title={meta.title} onClose={onClose} icon={meta.icon}>
-      <div className="p-4 space-y-3">
-        <div className="text-[11px] text-neutral-400 bg-black/30 border border-border rounded-lg p-3 leading-relaxed">
+    <Modal title={meta.title} onClose={() => { if (!busy) onClose(); }} icon={meta.icon}>
+      <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <div className="text-xs text-muted bg-panel2 border border-border rounded-lg p-3 leading-relaxed">
           {meta.hint}
         </div>
-        <label className="block text-[11px] text-neutral-500">{meta.inputLabel}</label>
-        <input
-          autoFocus
-          className="input w-full font-mono text-xs"
-          placeholder={meta.placeholder}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-        />
+        <label className="field-label" htmlFor={inputId}>{meta.inputLabel}
+          <input id={inputId} data-dialog-focus className="input w-full" placeholder={meta.placeholder} value={text}
+            onChange={(e) => setText(e.target.value)} disabled={busy} />
+        </label>
         {result && (
-          <div className={`text-xs px-3 py-2 rounded-lg border ${result.ok ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" : "text-red-300 border-red-500/30 bg-red-500/10"}`}>
+          <div role={result.ok ? "status" : "alert"} className={`text-xs px-3 py-2 rounded-lg border break-words ${result.ok ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" : "text-red-300 border-red-500/30 bg-red-500/10"}`}>
             {result.ok ? "✓ " : "✗ "}{result.text}
           </div>
         )}
-        <div className="flex justify-end gap-2 pt-1">
-          <button className="btn" onClick={onClose}>{result?.ok ? "关闭" : "取消"}</button>
-          <button className="btn-primary" disabled={busy || !text.trim()} onClick={submit}>
+        <div className="dialog-actions">
+          <button className="btn" type="button" disabled={busy} onClick={onClose}>{result?.ok ? "关闭" : "取消"}</button>
+          <button className="btn-primary" disabled={busy || !text.trim()}>
             {busy ? "导入中…" : <><Save size={13} /> 导入</>}
           </button>
         </div>
-      </div>
+      </form>
     </Modal>
   );
 }
@@ -191,24 +236,25 @@ export function ImportPathModal({
 /** 快捷键说明 */
 export function ShortcutsModal({ onClose }: { onClose: () => void }) {
   const rows: [string, string][] = [
-    ["Ctrl+F", "聚焦搜索框"],
-    ["Ctrl+A", "全选"],
+    [`${shortcutMod} + F`, "聚焦素材搜索框"],
+    [`${shortcutMod} + K`, "打开命令面板"],
+    [`${shortcutMod} + A`, "全选已载入的素材"],
     ["1 / 2 / 3 / 4 / 5", "切换 瀑布流 / 网格 / 列表 / 无限视图 / 分类墙"],
-    ["← → ↑ ↓", "在灯箱中切换图片"],
+    ["← / →", "在预览中切换素材"],
     ["Enter", "打开大图预览"],
-    ["Esc", "关闭弹窗 / 收起左栏 / 取消选择"],
+    ["Esc", "关闭弹层、详情或取消选择"],
     ["0–5", "灯箱中快速评分"],
     ["Delete", "删除选中项"],
-    ["无限视图(默认)", "拖拽平移 · 滚轮平移 · Ctrl+滚轮缩放 · 单击展开 · 双击大图"],
-    ["沉浸模式", "顶栏常驻 · 左栏收成图标轨,悬停张开 · 点墙面或 Esc 收起"],
+    [`${shortcutMod} + 滚轮`, "在画布中以光标为中心缩放"],
+    ["Shift + 拖动", "在无限画布中框选素材"],
   ];
   return (
     <Modal title="快捷键" onClose={onClose} icon={<Keyboard size={14} />}>
-      <div className="space-y-1.5">
+      <div className="shortcut-list">
         {rows.map(([k, v]) => (
-          <div key={k} className="flex items-center justify-between text-xs">
-            <kbd className="bg-panel border border-border rounded px-1.5 py-0.5 text-[11px] text-neutral-300">{k}</kbd>
-            <span className="text-neutral-500">{v}</span>
+          <div key={k}>
+            <kbd>{k}</kbd>
+            <span>{v}</span>
           </div>
         ))}
       </div>
@@ -219,66 +265,68 @@ export function ShortcutsModal({ onClose }: { onClose: () => void }) {
 /** 设置 */
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const info = useStore((s) => s.info);
-  const [watchFolders, setWatchFolders] = useState<string[]>([]);
-  const [autoImport, setAutoImport] = useState(true);
-  const [scanResult, setScanResult] = useState<string>("");
+  const [settings, setSettings] = useState<{ watchFolders: string[]; autoImport: boolean } | null>(null);
+  const [path, setPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState("");
+  const [error, setError] = useState("");
+  const showError = (error: unknown) => setError(error instanceof Error ? error.message : String(error));
 
   useEffect(() => {
-    api<{ watchFolders: string[]; autoImport: boolean }>("/settings").then((s) => {
-      setWatchFolders(s.watchFolders);
-      setAutoImport(s.autoImport);
-    });
+    api<NonNullable<typeof settings>>("/settings").then(setSettings).catch(showError);
   }, []);
 
-  const save = async (next: string[], auto: boolean) => {
-    setWatchFolders(next);
-    await api("/settings", { method: "PATCH", body: JSON.stringify({ key: "watchFolders", value: next }) });
-    await api("/settings", { method: "PATCH", body: JSON.stringify({ key: "autoImport", value: auto }) });
+  const update = async (key: "watchFolders" | "autoImport", value: string[] | boolean) => {
+    if (!settings || busy) return false;
+    setBusy(true); setError(""); setResult("");
+    try {
+      await api("/settings", { method: "PATCH", body: JSON.stringify({ key, value }) });
+      setSettings({ ...settings, [key]: value });
+      setResult("设置已保存");
+      return true;
+    } catch (error) { showError(error); return false; }
+    finally { setBusy(false); }
   };
+  const scan = async () => {
+    setBusy(true); setError(""); setResult("");
+    try {
+      const result = await api<{ imported: number }>("/watch-scan", { method: "POST" });
+      setResult(`已导入 ${formatCount(result.imported)} 个新文件`);
+      const st = useStore.getState();
+      await Promise.all([st.refreshMeta(), st.fetchItems()]);
+    } catch (error) { showError(error); }
+    finally { setBusy(false); }
+  };
+  const watched = settings?.watchFolders ?? [];
 
   return (
     <Modal title="设置" onClose={onClose} icon={<SettingsIcon size={14} />}>
-      <div className="space-y-4 text-xs">
-        <div>
-          <div className="text-[11px] text-neutral-500 mb-1 flex items-center gap-1"><HardDrive size={11} /> 库位置</div>
-          <div className="input w-full !py-1.5 text-[11px] text-neutral-400 truncate">{info?.path}</div>
-        </div>
-
-        <div>
-          <div className="text-[11px] text-neutral-500 mb-1.5">观察文件夹（自动导入新文件，每 30 秒扫描）</div>
-          <div className="space-y-1 mb-1.5">
-            {watchFolders.map((w, i) => (
-              <div key={i} className="flex items-center gap-1">
-                <span className="input flex-1 !py-1 text-[11px] truncate">{w}</span>
-                <button className="btn !p-1" onClick={() => save(watchFolders.filter((_, j) => j !== i), autoImport)}><Trash2 size={12} /></button>
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-1.5">
-            <button
-              className="btn-primary"
-              onClick={() => { const p = prompt("要观察的文件夹绝对路径："); if (p?.trim()) save([...watchFolders, p.trim()], autoImport); }}
-            >
-              添加
-            </button>
-            <button className="btn border border-border" onClick={async () => {
-              const r = await api<{ imported: number }>("/watch-scan", { method: "POST" });
-              setScanResult(`已导入 ${r.imported} 个新文件`);
-              useStore.getState().refreshMeta();
-              useStore.getState().fetchItems();
-            }}><Search size={12} /> 立即扫描</button>
-            {scanResult && <span className="text-[11px] text-green-400 self-center">{scanResult}</span>}
-          </div>
-        </div>
-
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input type="checkbox" checked={autoImport} onChange={(e) => save(watchFolders, e.target.checked)} className="accent-violet-400" />
-          <span className="text-neutral-300">自动导入观察文件夹中的新文件</span>
+      <div className="space-y-4">
+        <label className="field-label"><span className="flex items-center gap-1.5"><HardDrive size={15} /> 当前资源库位置</span>
+          <input className="input w-full" readOnly value={info?.path ?? ""} />
         </label>
-
-        <div className="text-[11px] text-neutral-600 border-t border-border pt-3">
-          Lilium v0.1.0 · Rust + React · 图片素材管理器
-        </div>
+        {!settings && !error && <p className="text-muted text-xs" role="status">正在读取设置…</p>}
+        {settings && <section className="settings-watch">
+          <h3>观察文件夹</h3><p>开启自动导入后，每 30 秒检查一次这些目录。</p>
+          {watched.length ? <ul>{watched.map((folder) => <li key={folder}>
+            <FolderOpen size={16} /><span className="truncate" title={folder}>{folder}</span>
+            <button type="button" className="icon-button is-danger" disabled={busy} title="停止观察" aria-label={`停止观察 ${folder}`}
+              onClick={() => void update("watchFolders", watched.filter((item) => item !== folder))}><Trash2 size={15} /></button>
+          </li>)}</ul> : <p className="settings-empty">还没有观察文件夹</p>}
+          <form className="settings-add" onSubmit={async (event) => {
+            event.preventDefault();
+            if (path.trim() && !watched.includes(path.trim()) && await update("watchFolders", [...watched, path.trim()])) setPath("");
+          }}>
+            <input className="input" value={path} onChange={(event) => setPath(event.target.value)} placeholder="目录绝对路径" aria-label="要观察的目录" />
+            <button className="btn-secondary" disabled={busy || !path.trim() || watched.includes(path.trim())}><Plus size={15} /> 添加</button>
+          </form>
+          <div className="settings-toggle-row">
+            <label><input type="checkbox" role="switch" checked={settings.autoImport} disabled={busy} onChange={(event) => void update("autoImport", event.target.checked)} />自动导入新文件</label>
+            <button className="btn-secondary" disabled={busy || !watched.length || !settings.autoImport} onClick={() => void scan()}><Search size={15} />立即扫描</button>
+          </div>
+        </section>}
+        {error && <p className="inline-error" role="alert">无法完成操作：{error}</p>}
+        {result && <p className="text-emerald-300 text-xs" role="status">{result}</p>}
       </div>
     </Modal>
   );
@@ -292,7 +340,7 @@ export function BatchRenameModal({ ids, onClose }: { ids: string[]; onClose: () 
   const items = useStore((s) => s.items);
   const fetchItems = useStore((s) => s.fetchItems);
   const [renaming, setRenaming] = useState(false);
-  const [result, setResult] = useState<string>("");
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const sel = items.filter((i) => ids.includes(i.id));
   const preview = (it: (typeof sel)[number] | undefined, idx: number) => {
@@ -301,7 +349,7 @@ export function BatchRenameModal({ ids, onClose }: { ids: string[]; onClose: () 
     const d = new Date(it.addedAt);
     const date = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
     return pattern
-      .replace(/\{name\}/g, stem)
+      .replace(/\{name\}/g, () => stem)
       .replace(/\{index\}/g, String(idx + 1).padStart(3, "0"))
       .replace(/\{date\}/g, date)
       .replace(/\{ext\}/g, it.ext)
@@ -311,23 +359,23 @@ export function BatchRenameModal({ ids, onClose }: { ids: string[]; onClose: () 
 
   const apply = async () => {
     setRenaming(true);
+    setResult(null);
     try {
       const r = await api<{ renamed: [string, string][] }>("/batch-rename", {
         method: "POST",
         body: JSON.stringify({ ids, pattern }),
       });
-      setResult(`已重命名 ${r.renamed.length} 项`);
-      fetchItems();
-      setTimeout(onClose, 900);
+      setResult({ ok: true, text: `已重命名 ${r.renamed.length} 项` });
+      await fetchItems();
     } catch (e) {
-      setResult(`失败: ${(e as Error).message}`);
+      setResult({ ok: false, text: `重命名失败：${(e as Error).message}` });
     } finally {
       setRenaming(false);
     }
   };
 
   return (
-    <Modal title={`批量重命名（${ids.length} 项）`} onClose={onClose} icon={<Pencil size={14} />}>
+    <Modal title={`批量重命名（${ids.length} 项）`} onClose={() => { if (!renaming) onClose(); }} icon={<Pencil size={14} />}>
       <div className="space-y-3 text-xs">
         <div>
           <div className="text-[11px] text-neutral-500 mb-1.5">模式（可用占位符）</div>
@@ -338,13 +386,13 @@ export function BatchRenameModal({ ids, onClose }: { ids: string[]; onClose: () 
               </button>
             ))}
           </div>
-          <input className="input w-full" value={pattern} onChange={(e) => setPattern(e.target.value)} autoFocus />
+          <input className="input w-full" aria-label="批量重命名模式" value={pattern} onChange={(e) => setPattern(e.target.value)} data-dialog-focus />
         </div>
 
         <div>
           <div className="text-[11px] text-neutral-500 mb-1.5">预览（前 5 项）</div>
           <div className="space-y-1 max-h-40 overflow-y-auto">
-            {sel.slice(0, 5).map((it, i) => (
+            {sel.slice(0, 5).map((it) => (
               <div key={it.id} className="flex items-center gap-2 text-[11px]">
                 <span className="text-neutral-500 truncate max-w-[45%]">{it.name}</span>
                 <span className="text-neutral-600">→</span>
@@ -355,33 +403,11 @@ export function BatchRenameModal({ ids, onClose }: { ids: string[]; onClose: () 
         </div>
 
         <div className="flex items-center gap-2">
-          <button className="btn-primary" disabled={renaming || !pattern.trim()} onClick={apply}>
-            {renaming ? "重命名中…" : "应用"}
-          </button>
-          {result && <span className="text-[11px] text-green-400">{result}</span>}
+          {result?.ok ? <button className="btn-primary" onClick={onClose}>完成</button>
+            : <button className="btn-primary" disabled={renaming || !pattern.trim()} onClick={apply}>{renaming ? "重命名中…" : "应用"}</button>}
+          {result && <span className={`text-xs ${result.ok ? "text-emerald-300" : "text-danger"}`} role={result.ok ? "status" : "alert"}>{result.text}</span>}
         </div>
       </div>
     </Modal>
-  );
-}
-
-/** 通用弹窗骨架 */
-export function Modal({ title, onClose, children, icon }: { title: string; onClose: () => void; children: React.ReactNode; icon?: React.ReactNode }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-[70] bg-black/60 flex items-center justify-center fade-in" onClick={onClose}>
-      <div className="bg-panel border border-border rounded-xl shadow-2xl w-[560px] max-w-[92vw] max-h-[82vh] flex flex-col pop-in" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-          {icon}
-          <span className="text-xs font-medium">{title}</span>
-          <button className="btn !p-1 ml-auto" onClick={onClose}><Trash2 size={0} className="hidden" /><span className="text-neutral-500 hover:text-neutral-200 text-base leading-none">×</span></button>
-        </div>
-        <div className="p-4 overflow-y-auto">{children}</div>
-      </div>
-    </div>
   );
 }

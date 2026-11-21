@@ -1,185 +1,147 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  LayoutGrid, Rows3, List, Infinity as InfinityIcon, Search, Upload, X,
-  FolderPlus, RefreshCcw, Keyboard, Settings, Shapes, BarChart3, SlidersHorizontal,
-} from "lucide-react";
-import { useStore, type ViewMode } from "../store/useStore";
-import { api } from "../api/client";
-import FiltersPanel from "./FiltersPanel";
+import { BarChart3, ChevronDown, Command, Ellipsis, FileUp, FolderInput, HardDrive, Keyboard, Link2, LoaderCircle, PanelLeft, PanelLeftClose, Plus, RefreshCw, Search, Settings, WandSparkles, X } from "lucide-react";
+import { importFiles } from "../lib/importFiles";
+import { shortcutMod } from "../lib/workspace";
+import { useStore } from "../store/useStore";
+import Popover from "./ui/Popover";
+import WindowControls from "./WindowControls";
 
-const VIEWS: { key: ViewMode; icon: React.ReactNode; label: string }[] = [
-  { key: "masonry", icon: <LayoutGrid size={15} />, label: "瀑布流" },
-  { key: "grid", icon: <Rows3 size={15} />, label: "网格" },
-  { key: "list", icon: <List size={15} />, label: "列表" },
-  { key: "infinite", icon: <InfinityIcon size={15} />, label: "无限视图" },
-  { key: "collections", icon: <Shapes size={15} />, label: "分类墙" },
-];
+export type ToolMode = "shortcuts" | "settings" | "stats" | "duplicates";
+export type ImportMode = "url" | "disk" | "library";
 
-const SORTS: { key: string; label: string }[] = [
-  { key: "addedAt", label: "添加时间" },
-  { key: "createdAt", label: "拍摄/创建时间" },
-  { key: "name", label: "名称" },
-  { key: "size", label: "文件大小" },
-  { key: "width", label: "宽度" },
-  { key: "rating", label: "评分" },
-  { key: "random", label: "随机" },
-];
-
-export default function TopBar({ onImported, immersive = false }: { onImported: () => void; immersive?: boolean }) {
-  const view = useStore((s) => s.view);
-  const setView = useStore((s) => s.setView);
-  // 沉浸模式:面板透明融入玻璃底,拖拽区交给外层 FloatingChrome
-  const shell = immersive
-    ? "h-full bg-transparent border-b-0 px-2"
-    : "h-11 shrink-0 bg-panel border-b border-border px-3";
-  const zoom = useStore((s) => s.zoom);
-  const setZoom = useStore((s) => s.setZoom);
-  const sort = useStore((s) => s.sort);
-  const asc = useStore((s) => s.asc);
-  const setSort = useStore((s) => s.setSort);
-  const filters = useStore((s) => s.filters);
-  const setFilters = useStore((s) => s.setFilters);
-  const total = useStore((s) => s.total);
-  const loading = useStore((s) => s.loading);
-  const refreshMeta = useStore((s) => s.refreshMeta);
+export default function TopBar({ sidebarOpen, toggleSidebar, onTool, onImport, onCommands }: {
+  sidebarOpen: boolean;
+  toggleSidebar: () => void;
+  onTool: (mode: ToolMode) => void;
+  onImport: (mode: ImportMode) => void;
+  onCommands: () => void;
+}) {
+  const query = useStore((s) => s.filters.q);
+  const setSearch = useStore((s) => s.setSearch);
+  const importing = useStore((s) => s.importing);
   const searchRef = useRef<HTMLInputElement>(null);
-  const advBtnRef = useRef<HTMLButtonElement>(null);
-  const [showFilters, setShowFilters] = useState(false);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const importTrigger = useRef<HTMLButtonElement>(null);
+  const toolsTrigger = useRef<HTMLButtonElement>(null);
+  const composing = useRef(false);
+  const [composition, setComposition] = useState<string | null>(null);
+  const [menu, setMenu] = useState<"tools" | "import" | null>(null);
+  const close = () => setMenu(null);
 
-  // 高级筛选是否生效（评分上限 / 日期区间 / 否定标签）
-  const filtersActive = filters.ratingMax > 0 || filters.addedFrom > 0 || filters.addedTo > 0 || filters.createdFrom > 0 || filters.createdTo > 0 || filters.notTags.length > 0;
-
-  // Ctrl+F 聚焦搜索
   useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "f") {
-        e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
+    const focusSearch = () => { searchRef.current?.focus(); searchRef.current?.select(); };
+    const searchShortcut = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && !event.isComposing && !document.querySelector("dialog[open]")) {
+        event.preventDefault();
+        focusSearch();
       }
     };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    const chooseFiles = () => uploadRef.current?.click();
+    const openImport = () => setMenu("import");
+    window.addEventListener("keydown", searchShortcut);
+    window.addEventListener("lilium:choose-files", chooseFiles);
+    window.addEventListener("lilium:import-menu", openImport);
+    window.addEventListener("lilium:focus-search", focusSearch);
+    return () => {
+      window.removeEventListener("keydown", searchShortcut);
+      window.removeEventListener("lilium:choose-files", chooseFiles);
+      window.removeEventListener("lilium:import-menu", openImport);
+      window.removeEventListener("lilium:focus-search", focusSearch);
+    };
   }, []);
 
-  // 搜索防抖：只在这里触发查询（setFilters 只更新状态不请求 q 字段）
-  useEffect(() => {
-    const t = setTimeout(() => {
-      useStore.getState().fetchItems();
-    }, 350);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.q]);
-
-  const doUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    const fd = new FormData();
-    fd.append("folderId", filters.folderId ?? "");
-    for (const f of Array.from(files)) fd.append("files", f, f.name);
-    await api("/import/upload", { method: "POST", body: fd });
-    refreshMeta();
-    useStore.getState().fetchItems();
-    onImported();
+  const tool = (mode: ToolMode) => {
+    toolsTrigger.current?.focus();
+    close();
+    onTool(mode);
+  };
+  const importFrom = (mode: ImportMode) => {
+    importTrigger.current?.focus();
+    close();
+    onImport(mode);
   };
 
   return (
-    <header className={`${shell} flex items-center gap-2`}>
-      {/* 沉浸模式下左端留出 mac 风格拖拽区(外层已有 data-tauri-drag-region 的按钮排) */}
-      {immersive && <div className="w-2 shrink-0 self-stretch" data-tauri-drag-region />}
-      {/* 视图切换 */}
-      <div className="flex items-center bg-panel2 rounded-lg p-1 border border-border gap-0.5">
-        {VIEWS.map((v) => (
-          <button
-            key={v.key}
-            title={v.label}
-            className={`px-2.5 py-1.5 rounded-md transition-colors ${
-              view === v.key
-                ? "bg-violet-500/30 text-violet-200 shadow-sm"
-                : "text-neutral-400 hover:text-neutral-200 hover:bg-white/5"
-            }`}
-            onClick={() => setView(v.key)}
-          >
-            {v.icon}
-          </button>
-        ))}
-      </div>
-
-      {/* 缩放 */}
-      <input
-        type="range"
-        min={100}
-        max={460}
-        value={zoom}
-        onChange={(e) => setZoom(Number(e.target.value))}
-        className="w-24 accent-violet-400"
-        title="缩放"
-      />
-
-      {/* 排序 */}
-      <select
-        className="input !py-1 w-[110px]"
-        value={sort}
-        onChange={(e) => setSort(e.target.value as never)}
-        title="排序方式"
-      >
-        {SORTS.map((s) => (
-          <option key={s.key} value={s.key}>{s.label}</option>
-        ))}
-      </select>
-      <button className="btn" title={asc ? "升序" : "降序"} onClick={() => setSort(sort, !asc)}>
-        {asc ? "↑" : "↓"}
-      </button>
-
-      {/* 高级筛选：评分区间 / 日期区间 / 否定标签（智能文件夹查询引擎新条件） */}
-      <div className="relative">
-        <button
-          ref={advBtnRef}
-          className={`btn relative ${filtersActive ? "!text-violet-300 border-violet-400/50" : ""}`}
-          title="高级筛选"
-          onClick={() => setShowFilters((v) => !v)}
-        >
-          <SlidersHorizontal size={13} />
-          {filtersActive && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-violet-400" />}
+    <header className="topbar" data-tauri-drag-region>
+      <div className="topbar-brand" data-tauri-drag-region>
+        <button type="button" className="icon-button sidebar-toggle" onClick={toggleSidebar} aria-expanded={sidebarOpen}
+          aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏" : "展开侧栏"}>
+          {sidebarOpen ? <PanelLeftClose size={19} /> : <PanelLeft size={19} />}
         </button>
-        {showFilters && <FiltersPanel anchorRef={advBtnRef} onClose={() => setShowFilters(false)} />}
+        <div className="brand" data-tauri-drag-region>
+          <img src="/lilium-mark.webp" width="32" height="32" alt="" draggable={false} data-tauri-drag-region />
+          <span data-tauri-drag-region>Lilium</span>
+        </div>
       </div>
 
-      {/* 搜索 */}
-      <div className="relative flex-1 max-w-md ml-2">
-        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500" />
-        <input
-          ref={searchRef}
-          className="input w-full pl-7 pr-7"
-          placeholder="搜索名称、注释、标签… (Ctrl+F)"
-          value={filters.q}
-          onChange={(e) => setFilters({ q: e.target.value })}
-        />
-        {filters.q && (
-          <button className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200" onClick={() => setFilters({ q: "" })}>
-            <X size={12} />
-          </button>
+      <div className="topbar-search" data-tauri-drag-region>
+        <form className="search-field" role="search" onSubmit={(event) => {
+          event.preventDefault();
+          if (!composing.current) setSearch(query, true);
+        }}>
+          <Search size={17} aria-hidden="true" />
+          <input type="search" ref={searchRef} value={composition ?? query} placeholder="搜索素材名称、注释或标签…" aria-label="搜索素材"
+            onChange={(event) => composing.current ? setComposition(event.target.value) : setSearch(event.target.value)}
+            onCompositionStart={(event) => { composing.current = true; setComposition(event.currentTarget.value); }}
+            onCompositionEnd={(event) => { composing.current = false; setComposition(null); setSearch(event.currentTarget.value); }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                event.stopPropagation();
+                if (query) setSearch("", true);
+                else event.currentTarget.blur();
+              }
+            }} />
+          {query ? <button type="button" className="icon-button" aria-label="清除搜索" title="清除搜索"
+            onClick={() => { setSearch("", true); searchRef.current?.focus(); }}><X size={15} /></button>
+            : <kbd aria-hidden="true">{shortcutMod} F</kbd>}
+        </form>
+      </div>
+
+      <div className="topbar-actions" data-tauri-drag-region>
+        <input ref={uploadRef} type="file" multiple hidden onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void importFiles(files);
+        }} />
+        <button type="button" className="icon-button topbar-command" aria-label="打开命令面板" aria-haspopup="dialog"
+          title={`命令面板（${shortcutMod}+K）`} onClick={onCommands}><Command size={17} /></button>
+        <button className="btn-primary import-button" ref={importTrigger} type="button" disabled={importing}
+          aria-expanded={menu === "import"} aria-haspopup="dialog" onClick={() => setMenu(menu === "import" ? null : "import")}>
+          {importing ? <LoaderCircle size={16} className="animate-spin" /> : <Plus size={17} />}
+          <span>{importing ? "导入中…" : "导入素材"}</span><ChevronDown size={13} className="import-chevron" />
+        </button>
+        {menu === "import" && (
+          <Popover anchor={importTrigger} label="导入方式" onClose={close} className="action-menu">
+            <p className="menu-caption">添加到素材库</p>
+            <button className="menu-row" onClick={() => { importTrigger.current?.focus(); close(); uploadRef.current?.click(); }}><FileUp size={16} />选择文件…</button>
+            <button className="menu-row" onClick={() => importFrom("url")}><Link2 size={16} />从链接导入…</button>
+            <button className="menu-row" onClick={() => importFrom("disk")}><HardDrive size={16} />从磁盘路径导入…</button>
+            <button className="menu-row" onClick={() => importFrom("library")}><FolderInput size={16} />迁移现有资源库…</button>
+          </Popover>
         )}
+        <button type="button" className="icon-button more-button" ref={toolsTrigger} title="更多工具" aria-label="更多工具"
+          aria-expanded={menu === "tools"} aria-haspopup="dialog" onClick={() => setMenu(menu === "tools" ? null : "tools")}><Ellipsis size={21} /></button>
+        {menu === "tools" && (
+          <Popover anchor={toolsTrigger} label="更多工具" onClose={close} className="action-menu">
+            <p className="menu-caption">资源库工具</p>
+            <button className="menu-row touch-command" onClick={() => { toolsTrigger.current?.focus(); close(); onCommands(); }}>
+              <Command size={16} />打开命令面板<kbd>{shortcutMod} K</kbd></button>
+            <button className="menu-row" onClick={() => tool("stats")}><BarChart3 size={16} />库统计</button>
+            <button className="menu-row" onClick={() => tool("duplicates")}><WandSparkles size={16} />查找重复素材</button>
+            <button className="menu-row" onClick={() => {
+              toolsTrigger.current?.focus();
+              close();
+              const st = useStore.getState();
+              void Promise.all([st.refreshMeta(), st.fetchItems()]);
+            }}><RefreshCw size={16} />刷新资源库</button>
+            <div className="menu-divider" />
+            <button className="menu-row" onClick={() => tool("settings")}><Settings size={16} />设置</button>
+            <button className="menu-row" onClick={() => tool("shortcuts")}><Keyboard size={16} />键盘快捷键<kbd>?</kbd></button>
+          </Popover>
+        )}
+        <WindowControls />
       </div>
-
-      <div className="ml-auto flex items-center gap-1">
-        <span className="text-[11px] text-neutral-500 mr-1">
-          {loading ? "加载中…" : `${total} 项`}
-        </span>
-        <label className="btn-primary cursor-pointer">
-          <Upload size={13} />
-          导入
-          <input type="file" multiple className="sr-only" onChange={(e) => doUpload(e.target.files)} />
-        </label>
-        <button className="btn" title="库统计" onClick={() => window.dispatchEvent(new CustomEvent("lilium:modal", { detail: "stats" }))}>
-          <BarChart3 size={13} />
-        </button>
-        <button className="btn" title="刷新" onClick={() => { refreshMeta(); useStore.getState().fetchItems(); }}>
-          <RefreshCcw size={13} />
-        </button>
-      </div>
-
     </header>
   );
 }
-
-export { Keyboard, Settings };

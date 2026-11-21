@@ -1,506 +1,300 @@
-import { useMemo, useRef, useState } from "react";
-import {
-  ChevronRight, Folder as FolderIcon, FolderOpen, FolderPlus, Image, Star, Trash2,
-  Tags, Palette, X, Bookmark, Pencil, Inbox, Film, Music, FileText, Type as TypeIcon, RefreshCw,
-} from "lucide-react";
-import { filtersFromQuery, useStore, type Filters } from "../store/useStore";
-import { api, type Folder, type SmartFolder } from "../api/client";
-import humanSize from "../lib/human";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Bookmark, ChevronDown, ChevronRight, Ellipsis, Folder, FolderOpen, FolderPlus, Images, Inbox, Keyboard, Layers2, Palette, Pencil, Plus, RefreshCw, Settings, SlidersHorizontal, Tags, Trash2, X } from "lucide-react";
+import { defaultFilters, filtersFromQuery, useStore, type Filters } from "../store/useStore";
+import { api, humanSize, type Folder as FolderEntry, type SmartFolder } from "../api/client";
+import { notify, reportError } from "../lib/feedback";
+import { formatCount, KINDS } from "../lib/workspace";
 import LibraryPanel from "./LibraryPanel";
+import NameDialog from "./ui/NameDialog";
+import Popover from "./ui/Popover";
+import type { ToolMode } from "./TopBar";
 
-interface TreeNode extends Folder {
-  children: TreeNode[];
-}
+interface TreeNode extends FolderEntry { children: TreeNode[] }
+const PRESET_COLORS = ["#ef5350", "#f49842", "#e5bc4a", "#70bc7f", "#51bbbc", "#639bf0", "#9b76ee", "#e07aa6"];
 
-function buildTree(folders: Folder[]): TreeNode[] {
-  const map = new Map<string, TreeNode>();
-  folders.forEach((f) => map.set(f.id, { ...f, children: [] }));
+function buildTree(folders: FolderEntry[]) {
+  const map = new Map<string, TreeNode>(folders.map((f) => [f.id, { ...f, children: [] }]));
   const roots: TreeNode[] = [];
   map.forEach((node) => {
-    if (node.parentId && map.has(node.parentId)) {
-      map.get(node.parentId)!.children.push(node);
-    } else {
-      roots.push(node);
-    }
+    const parent = node.parentId ? map.get(node.parentId) : null;
+    if (parent) parent.children.push(node);
+    else roots.push(node);
   });
   return roots;
 }
 
-function FolderNode({ node, depth }: { node: TreeNode; depth: number }) {
-  const folders = useStore((s) => s.folders);
-  const filters = useStore((s) => s.filters);
-  const setFilters = useStore((s) => s.setFilters);
-  const refreshMeta = useStore((s) => s.refreshMeta);
-  const fetchItems = useStore((s) => s.fetchItems);
-  const [open, setOpen] = useState(depth < 1);
-  const [dropping, setDropping] = useState(false);
+type Edit = { kind: "folder"; entry?: FolderEntry; parent?: TreeNode } | { kind: "smart"; entry?: SmartFolder };
+type OpenActions = { label: string; run: () => void; icon: React.ReactNode; danger?: boolean }[];
 
-  const active = filters.folderId === node.id;
-  const hasChildren = node.children.length > 0;
-
-  const countIn = useMemo(() => {
-    // 统计该节点及子节点的条目数交给后端，这里仅显示直接子数占位
-    return null;
-  }, []);
-  void countIn;
-
-  const createSub = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const name = prompt("子文件夹名称：");
-    if (!name?.trim()) return;
-    await api("/folders", { method: "POST", body: JSON.stringify({ parentId: node.id, name: name.trim() }) });
-    refreshMeta();
-  };
-
-  const rename = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const name = prompt("重命名文件夹：", node.name);
-    if (!name?.trim() || name === node.name) return;
-    await api(`/folders/${node.id}`, { method: "PATCH", body: JSON.stringify({ name: name.trim() }) });
-    refreshMeta();
-  };
-
-  const remove = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`删除文件夹「${node.name}」？其中的图片会移到未分类。`)) return;
-    await api(`/folders/${node.id}`, { method: "DELETE" });
-    if (filters.folderId === node.id) {
-      setFilters({ folderId: null });
-    } else {
-      refreshMeta();
-      fetchItems();
-    }
-  };
-
-  return (
-    <div>
-      <div
-        className={`group flex items-center gap-1 rounded-md px-1.5 py-[5px] cursor-pointer text-xs ${
-          active ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
-        } ${dropping ? "ring-1 ring-violet-400" : ""}`}
-        style={{ paddingLeft: depth * 12 + 6 }}
-        onClick={() => setFilters({ folderId: node.id, trash: false, smartId: null })}
-        onContextMenu={async (e) => {
-          // 简单上下文：用 prompt 流程
-          if (e.altKey) return;
-        }}
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes("application/x-lilium-items")) {
-            e.preventDefault();
-            setDropping(true);
-          }
-        }}
-        onDragLeave={() => setDropping(false)}
-        onDrop={async (e) => {
-          e.preventDefault();
-          setDropping(false);
-          const raw = e.dataTransfer.getData("application/x-lilium-items");
-          if (!raw) return;
-          const ids = JSON.parse(raw) as string[];
-          await api("/batch", { method: "POST", body: JSON.stringify({ ids, action: "move", folderId: node.id }) });
-          useStore.getState().fetchItems();
-        }}
-      >
-        <button
-          className={`p-0.5 rounded hover:bg-white/10 ${hasChildren ? "" : "invisible"}`}
-          onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-        >
-          <ChevronRight size={12} className={`transition-transform ${open ? "rotate-90" : ""}`} />
-        </button>
-        {open && hasChildren ? <FolderOpen size={14} className="text-violet-400/80 shrink-0" /> : <FolderIcon size={14} className="text-violet-400/70 shrink-0" />}
-        <span className="truncate flex-1">{node.name}</span>
-        <span className="hidden group-hover:flex items-center gap-0.5">
-          <button className="p-0.5 rounded hover:bg-white/10" onClick={createSub} title="新建子文件夹"><FolderPlus size={12} /></button>
-          <button className="p-0.5 rounded hover:bg-white/10" onClick={rename} title="重命名"><Pencil size={11} /></button>
-          <button className="p-0.5 rounded hover:bg-white/10" onClick={remove} title="删除"><Trash2 size={11} /></button>
-        </span>
-      </div>
-      {open && node.children.map((c) => <FolderNode key={c.id} node={c} depth={depth + 1} />)}
-    </div>
-  );
-}
-
-const KINDS: { key: string; label: string }[] = [
-  { key: "image", label: "图片" },
-  { key: "video", label: "视频" },
-  { key: "audio", label: "音频" },
-  { key: "font", label: "字体" },
-  { key: "document", label: "文档" },
-];
-
-const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#14b8a6", "#3b82f6", "#8b5cf6", "#ec4899"];
-
-export default function Sidebar({ immersive = false, collapsed = false }: { immersive?: boolean; collapsed?: boolean }) {
+export default function Sidebar({ collapsed = false, onDismiss, onNavigate, onExpand, onTool }: {
+  collapsed?: boolean;
+  onDismiss?: () => void;
+  onNavigate?: () => void;
+  onExpand: () => void;
+  onTool: (tool: ToolMode) => void;
+}) {
   const info = useStore((s) => s.info);
   const folders = useStore((s) => s.folders);
   const tags = useStore((s) => s.tags);
   const smartFolders = useStore((s) => s.smartFolders);
   const filters = useStore((s) => s.filters);
   const setFilters = useStore((s) => s.setFilters);
-  const resetFilters = useStore((s) => s.resetFilters);
   const refreshMeta = useStore((s) => s.refreshMeta);
-  const setChromeLeft = useStore((s) => s.setChromeLeft);
-
-  const [tagFilter, setTagFilter] = useState("");
-  const [libPanel, setLibPanel] = useState(false);
-  const libBtnRef = useRef<HTMLButtonElement>(null);
+  const [tagSearch, setTagSearch] = useState("");
+  const [tagLimit, setTagLimit] = useState(12);
+  const [libOpen, setLibOpen] = useState(false);
+  const [edit, setEdit] = useState<Edit | null>(null);
+  const libButton = useRef<HTMLButtonElement>(null);
   const tree = useMemo(() => buildTree(folders), [folders]);
+  const ancestors = useMemo(() => {
+    const byId = new Map(folders.map((f) => [f.id, f]));
+    const ids = new Set<string>();
+    let parent = filters.folderId ? byId.get(filters.folderId)?.parentId : null;
+    while (parent && !ids.has(parent)) { ids.add(parent); parent = byId.get(parent)?.parentId; }
+    return ids;
+  }, [folders, filters.folderId]);
+  const libraryName = info?.name ?? "Lilium 资源库";
+  const filteredTags = tags.filter((tag) => tag.name.toLowerCase().includes(tagSearch.trim().toLowerCase()));
 
-  const toggleKind = (k: string) => {
-    const kinds = filters.kinds.includes(k) ? filters.kinds.filter((x) => x !== k) : [...filters.kinds, k];
-    setFilters({ kinds });
+  const go = (scope: Partial<Filters>) => {
+    const st = useStore.getState();
+    if (st.view === "collections") st.setView("masonry");
+    st.setFilters({ ...defaultFilters, ...scope });
+    onNavigate?.();
   };
-
-  const saveSmart = async () => {
-    const name = prompt("智能文件夹名称：");
-    if (!name?.trim()) return;
-    const q: Partial<Filters> = { ...filters };
-    await api("/smart-folders", { method: "POST", body: JSON.stringify({ name: name.trim(), query: q }) });
-    refreshMeta();
+  const applyTag = (tag: string) => {
+    const st = useStore.getState();
+    if (st.view === "collections") st.setView("masonry");
+    setFilters({ tag: filters.tag === tag ? null : tag, untagged: false });
+    onNavigate?.();
   };
-
-  // 重命名智能文件夹(内联输入)
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameVal, setRenameVal] = useState("");
-  const commitRename = async () => {
-    if (!renamingId) return;
-    const name = renameVal.trim();
-    if (name) {
-      const sf = smartFolders.find((x) => x.id === renamingId);
-      if (sf) {
-        await api(`/smart-folders/${renamingId}`, { method: "PUT", body: JSON.stringify({ name, query: sf.query }) });
-        refreshMeta();
-      }
+  const save = async (name: string) => {
+    if (!edit) return;
+    if (edit.kind === "folder") {
+      if (edit.entry) await api(`/folders/${edit.entry.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+      else await api("/folders", { method: "POST", body: JSON.stringify({ name, parentId: edit.parent?.id ?? null }) });
+    } else {
+      const query = edit.entry?.query ?? useStore.getState().filters;
+      await api(edit.entry ? `/smart-folders/${edit.entry.id}` : "/smart-folders", {
+        method: edit.entry ? "PUT" : "POST", body: JSON.stringify({ name, query }),
+      });
     }
-    setRenamingId(null);
+    await refreshMeta();
+    notify(edit.entry ? "名称已更新" : edit.kind === "folder" ? "文件夹已创建" : "筛选条件已保存");
   };
-
-  // 用当前筛选覆盖智能文件夹的查询条件
-  const updateSmart = async (e: React.MouseEvent, sf: SmartFolder) => {
-    e.stopPropagation();
-    const q: Partial<Filters> = { ...filters };
-    await api(`/smart-folders/${sf.id}`, { method: "PUT", body: JSON.stringify({ name: sf.name, query: q }) });
-    refreshMeta();
+  const removeFolder = async (node: TreeNode) => {
+    if (!confirm(`删除文件夹「${node.name}」？此操作不会删除文件夹中的素材。`)) return;
+    try {
+      await api(`/folders/${node.id}`, { method: "DELETE" });
+      const st = useStore.getState();
+      if (st.filters.folderId === node.id) st.resetFilters();
+      else void st.fetchItems();
+      await refreshMeta();
+      notify("已删除文件夹");
+    } catch (error) { reportError("无法删除文件夹", error); }
   };
-
-  const newFolder = async () => {
-    const name = prompt("文件夹名称：");
-    if (!name?.trim()) return;
-    await api("/folders", { method: "POST", body: JSON.stringify({ parentId: null, name: name.trim() }) });
-    refreshMeta();
+  const removeSmart = async (entry: SmartFolder) => {
+    if (!confirm(`删除智能文件夹「${entry.name}」？`)) return;
+    try {
+      await api(`/smart-folders/${entry.id}`, { method: "DELETE" });
+      if (useStore.getState().filters.smartId === entry.id) useStore.getState().resetFilters();
+      await refreshMeta();
+      notify("已删除智能文件夹");
+    } catch (error) { reportError("无法删除智能文件夹", error); }
   };
-
-  const deleteSmart = async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (!confirm("删除该智能文件夹？")) return;
-    await api(`/smart-folders/${id}`, { method: "DELETE" });
-    if (filters.smartId === id) setFilters({ smartId: null });
-    else refreshMeta();
+  const updateSmart = async (entry: SmartFolder) => {
+    try {
+      await api(`/smart-folders/${entry.id}`, { method: "PUT", body: JSON.stringify({ name: entry.name, query: useStore.getState().filters }) });
+      await refreshMeta();
+      notify("已更新智能文件夹的筛选条件");
+    } catch (error) { reportError("无法更新智能文件夹", error); }
   };
-
-  const filteredTags = tags.filter((t) => !tagFilter || t.name.toLowerCase().includes(tagFilter.toLowerCase()));
 
   return (
-    <aside
-      className={`flex flex-col overflow-y-auto overflow-x-hidden ${
-        immersive ? "h-full pt-11 bg-panel/85 backdrop-blur-md border-r border-border/60" : "w-56 shrink-0 bg-panel border-r border-border"
-      }`}
-      style={{
-        width: immersive ? (collapsed ? 48 : 224) : undefined,
-        transition: immersive ? "width 340ms cubic-bezier(.22,1,.36,1)" : undefined,
-        boxShadow: immersive ? "8px 0 24px rgba(0,0,0,.25)" : undefined,
-      }}
-    >
-      {/* 库卡片(点击弹出库面板;面板 portal 到 body,不受侧栏裁剪) */}
-      <div className={`relative border-b border-border ${collapsed ? "px-1.5 py-2 flex justify-center" : "px-3 py-3"}`}>
-        <button
-          ref={libBtnRef}
-          className={`flex items-center gap-2 w-full rounded-lg hover:bg-white/5 transition-colors ${collapsed ? "justify-center p-1" : "px-1 py-1"}`}
-          title="资源库"
-          onClick={(e) => {
-            e.stopPropagation();
-            setLibPanel((v) => !v);
-          }}
-        >
-          <span className="text-lg shrink-0">🌸</span>
-          {!collapsed && (
-            <div className="min-w-0 text-left">
-              <div className="text-xs font-medium truncate flex items-center gap-1">
-                {info?.name ?? "Lilium"}
-                <ChevronRight size={10} className={`text-neutral-600 transition-transform ${libPanel ? "rotate-90" : ""}`} />
-              </div>
-              <div className="text-[10px] text-neutral-500">
-                {info ? `${info.itemCount} 项 · ${humanSize(info.totalSize)}` : ""}
-              </div>
-            </div>
-          )}
+    <aside className={`sidebar ${collapsed ? "is-collapsed" : ""}`} aria-label="素材库侧栏">
+      <div className="sidebar-workspace">
+        {!collapsed && <div className="sidebar-eyebrow">工作空间
+          {onDismiss && <button className="icon-button sidebar-mini" aria-label="关闭侧栏" onClick={onDismiss}><X size={16} /></button>}
+        </div>}
+        <button type="button" ref={libButton} className="library-trigger" title="管理资源库" aria-label="管理资源库" aria-haspopup="dialog"
+          aria-expanded={libOpen} onClick={() => setLibOpen((open) => !open)}>
+          <span className="library-mark"><Layers2 size={17} /></span>
+          {!collapsed && <><span className="min-w-0 flex-1"><strong className="block truncate" title={libraryName}>{libraryName}</strong>
+            <small>{info ? `${formatCount(info.itemCount)} 项 · ${humanSize(info.totalSize)}` : "本地素材库"}</small></span><ChevronDown size={14} /></>}
         </button>
-        {libPanel && <LibraryPanel anchorRef={libBtnRef} onClose={() => setLibPanel(false)} />}
+        {libOpen && <LibraryPanel anchorRef={libButton} onClose={() => setLibOpen(false)} />}
       </div>
 
-      {/* 固定 224px 内层列:宽度过渡期间内容零重排,aside 只做裁剪 */}
-      <div className="w-56 shrink-0">
-        {/* 快速入口:始终可见,图标左对齐(收/展位置一致,不跳动) */}
-        <div className="px-2 py-2 space-y-0.5 border-b border-border">
-          <SideBtn collapsed={collapsed} active={!filters.folderId && !filters.trash && !filters.smartId && !filters.tag && !filters.unfiled && !filters.untagged} onClick={() => resetFilters()} icon={<Image size={16} />} label="全部图片" />
-          <SideBtn collapsed={collapsed} active={filters.unfiled} onClick={() => setFilters({ unfiled: !filters.unfiled, folderId: null, trash: false, smartId: null })} icon={<Inbox size={16} />} label="未分类" />
-          <SideBtn collapsed={collapsed} active={filters.untagged} onClick={() => setFilters({ untagged: !filters.untagged, folderId: null, trash: false, smartId: null })} icon={<Tags size={16} />} label="未加标签" />
-          <SideBtn collapsed={collapsed} active={filters.trash} onClick={() => setFilters({ trash: !filters.trash, folderId: null, smartId: null })} icon={<Trash2 size={16} />} label="回收站" />
+      <nav className="sidebar-scroll" aria-label="素材分类">
+        <div className="sidebar-section">
+          {!collapsed && <h2 className="sidebar-eyebrow">素材库</h2>}
+          <NavButton icon={<Images size={17} />} label="全部素材" collapsed={collapsed}
+            active={!filters.folderId && !filters.smartId && !filters.trash && !filters.unfiled && !filters.untagged && !filters.tag}
+            onClick={() => go({})} count={info?.itemCount} />
+          <NavButton icon={<Inbox size={17} />} label="未分类" collapsed={collapsed} active={filters.unfiled && !filters.smartId}
+            onClick={() => go({ unfiled: true })} />
+          <NavButton icon={<Tags size={17} />} label="未打标签" collapsed={collapsed} active={filters.untagged && !filters.smartId}
+            onClick={() => go({ untagged: true })} />
+          <NavButton icon={<Trash2 size={17} />} label="回收站" collapsed={collapsed} active={filters.trash && !filters.smartId}
+            onClick={() => go({ trash: true })} />
         </div>
 
-        {/* 其余分区:窄栏缩为代表图标列(同 x 位置),展开完整呈现;不卸载不换几何 */}
-        <div
-          className={`px-2 py-2 ${collapsed ? "flex flex-col items-start gap-0.5" : ""}`}
-        >
-          {/* 文件夹:窄栏只显示一个入口图标(点击展开侧栏看完整树) */}
-          {collapsed ? (
-            <>
-              <RailBtn title="文件夹" active={!!filters.folderId} onClick={() => setChromeLeft(true)}>
-                <FolderIcon size={15} />
-              </RailBtn>
-              <RailBtn title="智能文件夹" onClick={() => setChromeLeft(true)}>
-                <Bookmark size={15} />
-              </RailBtn>
-            </>
-          ) : (
-            <>
-          <Section title="文件夹" action={<button className="btn !p-1" onClick={newFolder} title="新建文件夹"><FolderPlus size={13} /></button>}>
-            <div className="px-1">
-              {tree.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">右键/按钮新建文件夹</div>}
-              {tree.map((n) => <FolderNode key={n.id} node={n} depth={0} />)}
-            </div>
-          </Section>
-
-          {/* 智能文件夹 */}
-          <Section title="智能文件夹" action={<button className="btn !p-1" onClick={saveSmart} title="将当前筛选保存为智能文件夹"><Bookmark size={13} /></button>}>
-            <div className="px-1">
-              {smartFolders.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">保存当前筛选条件，快速复用</div>}
-              {smartFolders.map((sf) => (
-                <div
-                  key={sf.id}
-                  className={`group flex items-center gap-1.5 rounded-md px-2 py-[5px] cursor-pointer text-xs ${
-                    filters.smartId === sf.id ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
-                  }`}
-                  onClick={() => {
-                    const st = useStore.getState();
-                    st.setFilters({ ...st.filters, ...filtersFromQuery(sf.query), smartId: sf.id });
-                  }}
-                >
-                  <Bookmark size={13} className="text-amber-400/80 shrink-0" />
-                  {renamingId === sf.id ? (
-                    <input
-                      autoFocus
-                      className="input !px-1 !py-0.5 !text-xs w-full min-w-0"
-                      value={renameVal}
-                      onChange={(e) => setRenameVal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") commitRename();
-                        else if (e.key === "Escape") setRenamingId(null);
-                        e.stopPropagation();
-                      }}
-                      onBlur={commitRename}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <>
-                      <span className="truncate flex-1">{sf.name}</span>
-                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" title="用当前筛选覆盖更新" onClick={(e) => updateSmart(e, sf)}><RefreshCw size={11} /></button>
-                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" title="重命名" onClick={(e) => { e.stopPropagation(); setRenamingId(sf.id); setRenameVal(sf.name); }}><Pencil size={11} /></button>
-                      <button className="hidden group-hover:block p-0.5 hover:bg-white/10 rounded" onClick={(e) => deleteSmart(e, sf.id)}><Trash2 size={11} /></button>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </Section>
-            </>
-          )}
-
-          {/* 类型(仅展开态;窄栏用下方图标列) */}
-          {!collapsed && (
-            <Section title="类型">
-              <div className="px-2 flex flex-wrap gap-1">
-                {KINDS.map((k) => (
-                  <button
-                    key={k.key}
-                    className={`px-2 py-1 rounded text-[11px] border transition-colors ${
-                      filters.kinds.includes(k.key)
-                        ? "bg-violet-500/20 border-violet-400/50 text-violet-200"
-                        : "border-border text-neutral-400 hover:bg-white/5"
-                    }`}
-                    onClick={() => toggleKind(k.key)}
-                  >
-                    {k.label}
-                  </button>
-                ))}
-              </div>
-            </Section>
-          )}
-
-          {/* 评分(仅展开态;窄栏用下方星标钮) */}
-          {!collapsed && (
-            <Section title="评分">
-              <div className="px-2 flex items-center gap-1">
-                {[0, 1, 2, 3, 4, 5].map((n) => (
-                  <button
-                    key={n}
-                    title={n === 0 ? "全部评分" : `${n} 星及以上`}
-                    className={`px-1.5 py-0.5 rounded text-[11px] shrink-0 ${
-                      filters.ratingMin === n ? "bg-violet-500/25 text-violet-200" : "text-neutral-500 hover:bg-white/5"
-                    }`}
-                    onClick={() => setFilters({ ratingMin: n })}
-                  >
-                    {n === 0 ? "A" : `${n}★`}
-                  </button>
-                ))}
-                <Star size={11} className="text-amber-400/60 ml-0.5" />
-              </div>
-            </Section>
-          )}
-
-          {/* 颜色(仅展开态;窄栏用下方色点列) */}
-          {!collapsed && (
-            <Section title="颜色" action={filters.color ? <button className="btn !p-1" onClick={() => setFilters({ color: null })}><X size={12} /></button> : undefined}>
-              <div className="px-2 flex flex-wrap items-center gap-1.5">
-                {PRESET_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    className={`w-5 h-5 rounded-full border-2 transition-transform hover:scale-110 ${filters.color === c ? "border-white" : "border-transparent"}`}
-                    style={{ backgroundColor: c }}
-                    onClick={() => setFilters({ color: c, colorTolerance: 60 })}
-                    title={c}
-                  />
-                ))}
-                <label className="w-5 h-5 rounded-full border border-dashed border-neutral-500 flex items-center justify-center cursor-pointer hover:border-violet-400" title="自定义颜色">
-                  <Palette size={10} className="text-neutral-400" />
-                  <input
-                    type="color"
-                    className="sr-only"
-                    onChange={(e) => setFilters({ color: e.target.value, colorTolerance: 60 })}
-                  />
-                </label>
-              </div>
-            </Section>
-          )}
-
-          {/* 标签(仅展开态;窄栏用下方标签钮) */}
-          {!collapsed && (
-            <Section title={`标签 (${tags.length})`}>
-              <div className="px-2 pb-1">
-                <input className="input w-full mb-1.5" placeholder="搜索标签…" value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} />
-              </div>
-              <div className="px-1 flex flex-col">
-                {filteredTags.slice(0, 60).map((t) => (
-                  <div
-                    key={t.name}
-                    className={`group flex items-center gap-2 rounded-md px-2 py-[4px] cursor-pointer text-xs ${
-                      filters.tag === t.name ? "bg-violet-500/15 text-violet-300" : "hover:bg-white/5 text-neutral-300"
-                    }`}
-                    onClick={() => setFilters({ tag: filters.tag === t.name ? null : t.name })}
-                  >
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: t.color }} />
-                    <span className="truncate flex-1">{t.name}</span>
-                    <span className="text-[10px] text-neutral-600">{t.count}</span>
-                  </div>
-                ))}
-                {filteredTags.length === 0 && <div className="text-[11px] text-neutral-600 px-2 py-1 whitespace-nowrap overflow-hidden">暂无标签</div>}
-              </div>
-            </Section>
-          )}
-
-          {/* 类型:窄栏显示 5 个 kind 图标(图片/视频/音频/字体/文档) */}
-          {collapsed && (
-            <div className="flex flex-col items-start gap-0.5 pt-2 mt-2 border-t border-border">
-              {KINDS.map((k) => {
-                const Ico = { image: Image, video: Film, audio: Music, font: TypeIcon, document: FileText }[k.key] ?? Image;
-                return (
-                  <RailBtn key={k.key} title={k.label} active={filters.kinds.includes(k.key)} onClick={() => toggleKind(k.key)}>
-                    <Ico size={15} />
-                  </RailBtn>
-                );
-              })}
-            </div>
-          )}
-
-          {/* 评分+标签:窄栏常用钮(颜色过滤只在展开态提供) */}
-          {collapsed && (
-            <div className="flex flex-col items-start gap-0.5 pt-2 mt-2 border-t border-border">
-              <RailBtn
-                title={filters.ratingMin > 0 ? `评分 ≥ ${filters.ratingMin} 星(点击升高)` : "按评分过滤"}
-                active={filters.ratingMin > 0}
-                onClick={() => setFilters({ ratingMin: (filters.ratingMin + 1) % 6 })}
-              >
-                <span className="relative flex items-center justify-center">
-                  <Star size={15} className={filters.ratingMin > 0 ? "text-amber-400" : ""} />
-                  {filters.ratingMin > 0 && (
-                    <span className="absolute -bottom-1 -right-1 text-[8px] font-bold bg-violet-500 text-white rounded-full w-3 h-3 flex items-center justify-center">
-                      {filters.ratingMin}
-                    </span>
-                  )}
-                </span>
-              </RailBtn>
-              <RailBtn title={`标签 (${tags.length})`} active={!!filters.tag} onClick={() => setChromeLeft(true)}>
-                <Tags size={15} />
-              </RailBtn>
-            </div>
-          )}
-
-          <div className={collapsed ? "hidden" : "mt-auto px-3 py-2 text-[10px] text-neutral-600 border-t border-border whitespace-nowrap overflow-hidden"}>
-            Lilium · 本地优先的图片管理
+        {collapsed ? (
+          <div className="sidebar-section rail-sections">
+            <NavButton collapsed icon={<Folder size={17} />} label="展开文件夹" active={Boolean(filters.folderId && !filters.smartId)} onClick={onExpand} />
+            <NavButton collapsed icon={<Bookmark size={17} />} label="展开智能文件夹" active={Boolean(filters.smartId)} onClick={onExpand} />
+            <NavButton collapsed icon={<Tags size={17} />} label="展开标签" active={Boolean(filters.tag)} onClick={onExpand} />
+            <NavButton collapsed icon={<SlidersHorizontal size={17} />} label="展开快速筛选" active={Boolean(filters.kinds.length || filters.color || filters.ratingMin)} onClick={onExpand} />
           </div>
-        </div>
+        ) : <>
+          <Section title="文件夹" action={<button className="icon-button sidebar-mini" title="新建文件夹" aria-label="新建文件夹"
+            onClick={() => setEdit({ kind: "folder" })}><Plus size={16} /></button>}>
+            {tree.length ? tree.map((node) => <FolderNode key={node.id} node={node} depth={0} ancestors={ancestors}
+              activeId={!filters.smartId && !filters.trash ? filters.folderId : null}
+              onOpen={(id) => go({ folderId: id })} onNew={(parent) => setEdit({ kind: "folder", parent })}
+              onRename={(entry) => setEdit({ kind: "folder", entry })} onDelete={removeFolder} />)
+              : <button className="sidebar-empty" onClick={() => setEdit({ kind: "folder" })}><FolderPlus size={15} /> 新建文件夹</button>}
+          </Section>
+          <Section title="智能文件夹" action={<button className="icon-button sidebar-mini" title="保存当前筛选" aria-label="保存当前筛选"
+            onClick={() => setEdit({ kind: "smart" })}><Plus size={16} /></button>}>
+            {smartFolders.length ? smartFolders.map((entry) => <div className={`sidebar-tree-row ${filters.smartId === entry.id ? "is-active" : ""}`} key={entry.id}>
+              <NavButton icon={<Bookmark size={15} />} label={entry.name} active={filters.smartId === entry.id}
+                onClick={() => go({ ...filtersFromQuery(entry.query), smartId: entry.id })} />
+              <RowActions label={entry.name} actions={[
+                { icon: <RefreshCw size={15} />, label: "用当前筛选覆盖", run: () => void updateSmart(entry) },
+                { icon: <Pencil size={15} />, label: "重命名", run: () => setEdit({ kind: "smart", entry }) },
+                { icon: <Trash2 size={15} />, label: "删除智能文件夹", run: () => void removeSmart(entry), danger: true },
+              ]} />
+            </div>) : <button className="sidebar-empty" onClick={() => setEdit({ kind: "smart" })}><Bookmark size={15} /> 保存当前筛选</button>}
+          </Section>
+          <Section title="标签" badge={tags.length || undefined}>
+            {tags.length > 8 && <input className="input sidebar-tag-search" aria-label="搜索标签" placeholder="搜索标签…"
+              value={tagSearch} onChange={(event) => { setTagSearch(event.target.value); setTagLimit(12); }} />}
+            {filteredTags.slice(0, tagLimit).map((tag) => <NavButton key={tag.name} icon={<span className="color-dot" style={{ background: tag.color }} />}
+              label={tag.name} active={filters.tag === tag.name} count={tag.count} onClick={() => applyTag(tag.name)} />)}
+            {!filteredTags.length && <p className="sidebar-note">{tags.length ? "没有匹配的标签" : "给素材打上标签后，会显示在这里"}</p>}
+            {filteredTags.length > tagLimit && <button className="text-button sidebar-more" onClick={() => setTagLimit(tagLimit + 30)}>查看更多标签</button>}
+          </Section>
+          <Section title="快速筛选" initiallyOpen={false} badge={filters.kinds.length + Number(Boolean(filters.color)) + Number(filters.ratingMin > 0) || undefined}>
+            <div className="sidebar-refine">
+              <p>素材类型</p>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(KINDS).map(([kind, label]) => <button key={kind} className="chip" aria-pressed={filters.kinds.includes(kind)}
+                  onClick={() => setFilters({ kinds: filters.kinds.includes(kind) ? filters.kinds.filter((k) => k !== kind) : [...filters.kinds, kind] })}>{label}</button>)}
+              </div>
+              <label className="field-label">最低评分
+                <select className="input" value={filters.ratingMin} onChange={(e) => {
+                  const ratingMin = Number(e.target.value);
+                  setFilters({ ratingMin, ...(filters.ratingMax && ratingMin > filters.ratingMax ? { ratingMax: 0 } : {}) });
+                }}>
+                  {[0, 1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n ? `${n} 星及以上` : "不限"}</option>)}
+                </select>
+              </label>
+              <div className="flex items-center justify-between"><p>主色</p>{filters.color && <button className="text-button" onClick={() => setFilters({ color: null })}>清除</button>}</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {PRESET_COLORS.map((color) => <button className="swatch" key={color} style={{ background: color }} title={color}
+                  aria-pressed={filters.color === color} aria-label={`主色 ${color}`} onClick={() => setFilters({ color: filters.color === color ? null : color, colorTolerance: 60 })} />)}
+                <label className="swatch swatch-custom" title="自定义主色"><Palette size={13} />
+                  <input type="color" aria-label="自定义主色" className="sr-only" value={filters.color ?? "#9b76ee"}
+                    onChange={(event) => setFilters({ color: event.target.value, colorTolerance: 60 })} /></label>
+              </div>
+            </div>
+          </Section>
+        </>}
+      </nav>
+
+      <div className="sidebar-footer">
+        <NavButton collapsed={collapsed} icon={<Settings size={17} />} label="设置" onClick={() => onTool("settings")} />
+        <NavButton collapsed={collapsed} icon={<Keyboard size={17} />} label="键盘快捷键" onClick={() => onTool("shortcuts")} />
       </div>
+      {edit && <NameDialog title={edit.entry ? "重命名" : edit.kind === "smart" ? "保存为智能文件夹" : edit.parent ? "新建子文件夹" : "新建文件夹"}
+        initial={edit.entry?.name} onClose={() => setEdit(null)} onSave={save} />}
     </aside>
   );
 }
 
-function Section({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
-  const [collapsed, setCollapsed] = useState(false);
-  return (
-    <div className="border-b border-border py-2">
-      <div className="flex items-center justify-between px-3 mb-1">
-        <button
-          className="flex-1 flex items-center h-6 text-[10px] font-medium tracking-wider text-neutral-500 uppercase hover:text-neutral-300"
-          onClick={() => setCollapsed(!collapsed)}
-        >
-          {title}
-        </button>
-        {action}
-      </div>
-      {!collapsed && children}
+function FolderNode({ node, depth, activeId, ancestors, onOpen, onNew, onRename, onDelete }: {
+  node: TreeNode; depth: number; activeId: string | null; ancestors: Set<string>;
+  onOpen: (id: string) => void; onNew: (node: TreeNode) => void; onRename: (node: TreeNode) => void; onDelete: (node: TreeNode) => void;
+}) {
+  const [open, setOpen] = useState(() => depth === 0 || ancestors.has(node.id));
+  const [dropping, setDropping] = useState(false);
+  const below = ancestors.has(node.id);
+  useEffect(() => { if (below) setOpen(true); }, [below]);
+  const active = activeId === node.id;
+  const hasChildren = node.children.length > 0;
+
+  return <div>
+    <div className={`sidebar-tree-row ${active ? "is-active" : ""} ${dropping ? "is-dropping" : ""}`} style={{ paddingInlineStart: Math.min(depth, 5) * 10 }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("application/x-lilium-items")) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropping(true);
+      }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropping(false); }}
+      onDrop={async (event) => {
+        setDropping(false);
+        const raw = event.dataTransfer.getData("application/x-lilium-items");
+        if (!raw) return;
+        event.preventDefault();
+        try {
+          const ids = JSON.parse(raw) as string[];
+          await api("/batch", { method: "POST", body: JSON.stringify({ ids, action: "move", folderId: node.id }) });
+          const st = useStore.getState();
+          st.clearSelection();
+          await Promise.all([st.fetchItems(), st.refreshMeta()]);
+          notify(`已移动到「${node.name}」`);
+        } catch (error) { reportError("无法移动素材", error); }
+      }}>
+      {hasChildren ? <button className="sidebar-disclosure" type="button" aria-expanded={open} aria-label={`${open ? "折叠" : "展开"} ${node.name}`}
+        onClick={() => setOpen((value) => !value)}><ChevronRight size={13} className={open ? "rotate-90" : ""} /></button>
+        : <span className="sidebar-disclosure" />}
+      <NavButton icon={open && hasChildren ? <FolderOpen size={16} /> : <Folder size={16} />} label={node.name} active={active}
+        count={node.itemCount} onClick={() => onOpen(node.id)} />
+      <RowActions label={node.name} actions={[
+        { icon: <FolderPlus size={15} />, label: "新建子文件夹", run: () => { setOpen(true); onNew(node); } },
+        { icon: <Pencil size={15} />, label: "重命名", run: () => onRename(node) },
+        { icon: <Trash2 size={15} />, label: "删除文件夹", run: () => onDelete(node), danger: true },
+      ]} />
     </div>
-  );
+    {open && node.children.map((child) => <FolderNode key={child.id} node={child} depth={depth + 1}
+      {...{ ancestors, activeId, onOpen, onNew, onRename, onDelete }} />)}
+  </div>;
 }
 
-function SideBtn({ active, onClick, icon, label, collapsed = false }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string; collapsed?: boolean }) {
-  // 同一 DOM 两种状态:高度恒定 h-7(28px),行距 space-y-0.5 不变 → 收/展零位移;
-  // 图标中心:展开 = px-2(8) + w-4/2(8),收起 = w-8 居中(16),在容器 px-2 下同为 cx=24。
-  return (
-    <button
-      title={label}
-      className={`flex items-center h-7 rounded-md text-xs transition-colors ${
-        collapsed ? "w-8 justify-center" : "w-full gap-2 px-2"
-      } ${active ? "bg-violet-500/15 text-violet-300" : "text-neutral-300 hover:bg-white/5"}`}
-      onClick={onClick}
-    >
-      <span className="shrink-0 w-4 flex justify-center">{icon}</span>
-      {!collapsed && <span className="truncate">{label}</span>}
-    </button>
-  );
+function RowActions({ label, actions }: { label: string; actions: OpenActions }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  return <>
+    <button type="button" className="icon-button sidebar-mini sidebar-row-actions" ref={anchor} title={`${label}的操作`}
+      aria-label={`${label}的操作`} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen(!open)}><Ellipsis size={16} /></button>
+    {open && <Popover anchor={anchor} className="action-menu" label={`${label}的操作`} onClose={() => setOpen(false)}>
+      {actions.map((action) => <button key={action.label} className={`menu-row ${action.danger ? "is-danger" : ""}`} onClick={() => {
+        anchor.current?.focus(); setOpen(false); action.run();
+      }}>{action.icon}{action.label}</button>)}
+    </Popover>}
+  </>;
 }
 
-/** 窄栏图标钮:与 SideBtn 收起态同几何(h-7 w-8, cx=24),用于分区代表图标 */
-function RailBtn({ active, onClick, title, children, style }: { active?: boolean; onClick: () => void; title: string; children: React.ReactNode; style?: React.CSSProperties }) {
-  return (
-    <button
-      title={title}
-      className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors ${
-        active ? "bg-violet-500/25 text-violet-200" : "text-neutral-400 hover:text-neutral-200 hover:bg-white/10"
-      }`}
-      onClick={onClick}
-      style={style}
-    >
-      {children}
-    </button>
-  );
+function NavButton({ icon, label, onClick, active, collapsed, count }: {
+  icon: React.ReactNode; label: string; onClick: () => void; active?: boolean; collapsed?: boolean; count?: number;
+}) {
+  return <button className={`sidebar-link ${active ? "is-active" : ""}`} type="button" title={label} aria-label={label}
+    aria-current={active ? "true" : undefined} onClick={onClick}>
+    <span className="sidebar-link-icon" aria-hidden="true">{icon}</span>
+    {!collapsed && <><span className="min-w-0 flex-1 truncate">{label}</span>{count !== undefined && <span className="sidebar-count">{formatCount(count)}</span>}</>}
+  </button>;
+}
+
+function Section({ title, action, badge, children, initiallyOpen = true }: {
+  title: string; action?: React.ReactNode; badge?: number; children: React.ReactNode; initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  return <section className="sidebar-section">
+    <div className="sidebar-section-header">
+      <h2><button className="sidebar-eyebrow" type="button" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {title}{badge !== undefined && <span className="sidebar-count">{formatCount(badge)}</span>}
+        <ChevronRight size={11} className={open ? "rotate-90" : ""} />
+      </button></h2>{action}
+    </div>
+    {open && children}
+  </section>;
 }

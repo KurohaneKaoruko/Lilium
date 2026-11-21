@@ -1,8 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Folder as FolderIcon, Tag, ChevronLeft, Plus } from "lucide-react";
-import { useStore } from "../../store/useStore";
-import { api, thumbUrl } from "../../api/client";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Folder as FolderIcon, Tag, Move, Plus } from "lucide-react";
+import { defaultFilters, useStore } from "../../store/useStore";
+import { api } from "../../api/client";
 import { PAN_INERTIA, WHEEL_SMOOTHING, reflowCurve } from "../../lib/wallMotion";
+import { formatCount, isShortcutScope } from "../../lib/workspace";
+import { notify } from "../../lib/feedback";
+import NameDialog from "../ui/NameDialog";
+import CanvasControls, { prefersReducedMotion } from "./CanvasControls";
+import { Thumb } from "./shared";
 
 /**
  * 分类卡片墙:无限视图同款镜头模型 —— 卡片散布在无限平面上,
@@ -16,7 +21,6 @@ interface Card {
   kind: "folder" | "tag";
   id: string;
   title: string;
-  sub: string;
   cover: string | null;
   count: number;
   color?: string;
@@ -42,20 +46,18 @@ function hash32(s: string): number {
 export default function CollectionsView() {
   const folders = useStore((s) => s.folders);
   const tags = useStore((s) => s.tags);
-  const smartFolders = useStore((s) => s.smartFolders);
   const setFilters = useStore((s) => s.setFilters);
-  const fetchItems = useStore((s) => s.fetchItems);
   const refreshMeta = useStore((s) => s.refreshMeta);
 
   const [tab, setTab] = useState<"folders" | "tags">("folders");
-  void smartFolders;
+  const [creating, setCreating] = useState(false);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const worldRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const sizeRef = useRef({ w: 0, h: 0 });
   const cam = useRef({ tx: 0, ty: 0, z: 1 });
-  const [renderTick, forceRender] = useState(0);
+  const [zoom, setZoom] = useState(1);
   /** 当前聚焦卡 key(applyCamera 每帧读取) */
   const focusKeyRef = useRef<string | null>(null);
   /** 深度趟的元素缓存(key → 卡中心世界坐标) */
@@ -69,14 +71,13 @@ export default function CollectionsView() {
   } | null>(null);
   const dragRef = useRef<{
     x: number; y: number; tx: number; ty: number; moved: boolean;
-    lastT: number; vx: number; vy: number; px?: number; py?: number;
+    lastT: number; vx: number; vy: number; px?: number; py?: number; pointer: number;
   } | null>(null);
 
-  const newFolder = async () => {
-    const name = prompt("文件夹名称：");
-    if (!name?.trim()) return;
-    await api("/folders", { method: "POST", body: JSON.stringify({ parentId: null, name: name.trim() }) });
-    refreshMeta();
+  const newFolder = async (name: string) => {
+    await api("/folders", { method: "POST", body: JSON.stringify({ parentId: null, name }) });
+    await refreshMeta();
+    notify("文件夹已创建");
   };
 
   const cards: Card[] = useMemo(() => {
@@ -86,7 +87,6 @@ export default function CollectionsView() {
         kind: "folder" as const,
         id: f.id,
         title: f.name,
-        sub: `${f.itemCount ?? 0} 张`,
         cover: f.coverItemId ?? null,
         count: f.itemCount ?? 0,
       }));
@@ -96,7 +96,6 @@ export default function CollectionsView() {
       kind: "tag" as const,
       id: t.name,
       title: t.name,
-      sub: `${t.count} 张`,
       cover: null,
       count: t.count,
       color: t.color,
@@ -147,7 +146,7 @@ export default function CollectionsView() {
   const focusCard = useCallback(
     (p: { x: number; y: number } | null) => {
       const { w, h } = sizeRef.current;
-      const z1 = p ? 1.3 : 0.9;
+      const z1 = p ? Math.min(1.3, Math.max(.75, (w - 42) / CARD_W)) : w < 500 ? .72 : .92;
       const wx = p ? p.x : 0;
       const wy = p ? p.y : 0;
       const endTx = w / 2 - wx * z1;
@@ -155,6 +154,10 @@ export default function CollectionsView() {
       const dist = Math.hypot(endTx - cam.current.tx, endTy - cam.current.ty);
       const ease = reflowCurve(Math.max(240, dist));
       stopCamAnim();
+      if (prefersReducedMotion()) {
+        cam.current = { tx: endTx, ty: endTy, z: z1 };
+        setZoom(z1); applyCamera(); return;
+      }
       const from = { ...cam.current };
       const t0 = performance.now();
       const handle = setInterval(() => {
@@ -164,7 +167,7 @@ export default function CollectionsView() {
         cam.current.ty = from.ty + (endTy - from.ty) * e;
         cam.current.z = from.z + (z1 - from.z) * e;
         applyCamera();
-        if (prog >= 1) clearInterval(handle);
+        if (prog >= 1) { clearInterval(handle); camAnim.current = null; setZoom(z1); }
       }, 16);
       camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
     },
@@ -190,13 +193,12 @@ export default function CollectionsView() {
     if (focusKeyRef.current === c.key) {
       // 已聚焦 → 进入分类
       if (c.kind === "folder") {
-        setFilters({ folderId: c.id, recursive: true, tag: null, trash: false });
+        setFilters({ ...defaultFilters, folderId: c.id });
       } else {
-        setFilters({ tag: c.id, folderId: null, trash: false });
+        setFilters({ ...defaultFilters, tag: c.id });
       }
       focusKeyRef.current = null;
-      useStore.setState({ view: "masonry" });
-      fetchItems();
+      useStore.getState().setView("masonry");
       return;
     }
     setFocused(c.key);
@@ -205,7 +207,7 @@ export default function CollectionsView() {
   /** 卡片世界坐标:错落有致 —— 网格保证不打架,哈希决定行内偏移/上下沉浮;大小交给近大远小 */
   const placed = useMemo(() => {
     const n = cards.length;
-    const cols = Math.max(1, Math.ceil(Math.sqrt(n * 1.4)));
+    const cols = Math.min(Math.max(n, 1), Math.max(1, Math.ceil(Math.sqrt(n * 1.4))));
     const rows = Math.ceil(n / cols);
     return cards.map((c, i) => {
       const h = hash32(c.key);
@@ -217,8 +219,8 @@ export default function CollectionsView() {
       const jy = (((h >>> 16) % 100) / 100 - 0.5) * 46;
       return {
         card: c,
-        x: (gx - (cols - 1) / 2) * GRID_X + rowShift + jx,
-        y: (gy - (rows - 1) / 2) * GRID_Y + jy,
+        x: (gx - (cols - 1) / 2) * GRID_X + rowShift + jx - CARD_W / 2,
+        y: (gy - (rows - 1) / 2) * GRID_Y + jy - CARD_H / 2,
       };
     });
   }, [cards]);
@@ -228,31 +230,18 @@ export default function CollectionsView() {
   const placedByKeyRef = useRef(placedByKey);
   placedByKeyRef.current = placedByKey;
 
-  // 视口测量:callback ref 挂载即观察
-  const attachContainer = useCallback((el: HTMLDivElement | null) => {
-    containerRef.current = el;
+  useLayoutEffect(() => {
+    const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => {
+    const measure = () => {
       sizeRef.current = { w: el.clientWidth, h: el.clientHeight };
       setSize(sizeRef.current);
-      applyCamera();
-    });
+    };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    sizeRef.current = { w: el.clientWidth, h: el.clientHeight };
-    setSize(sizeRef.current);
-  }, [applyCamera]);
-
-  /** 首帧:卡片云按视口居中 */
-  const didCenterRef = useRef(false);
-  useEffect(() => {
-    if (didCenterRef.current || size.w < 100) return;
-    didCenterRef.current = true;
-    cam.current.z = 0.9;
-    cam.current.tx = size.w / 2;
-    cam.current.ty = size.h / 2;
-    applyCamera();
-    forceRender((v) => v + 1);
-  }, [size, applyCamera]);
+    measure();
+    return () => ro.disconnect();
+  }, []);
 
   const startCamAnim = useCallback(() => {
     if (camAnim.current) return;
@@ -299,29 +288,15 @@ export default function CollectionsView() {
     camAnim.current.handle = handle;
   }, [applyCamera]);
 
-  // 切 tab(卡片集变化)→ 清聚焦并回中
-  useEffect(() => {
-    if (!didCenterRef.current || size.w < 100) return;
-    focusKeyRef.current = null;
-    const ease = reflowCurve(600);
-    const from = { ...cam.current };
-    const to = { tx: size.w / 2, ty: size.h / 2 };
-    const t0 = performance.now();
+  const reset = useCallback(() => {
     stopCamAnim();
-    const anim = () => {
-      const p = Math.min(1, (performance.now() - t0) / ease.durationMs);
-      const e = ease.ease(p);
-      cam.current.tx = from.tx + (to.tx - from.tx) * e;
-      cam.current.ty = from.ty + (to.ty - from.ty) * e;
-      applyCamera();
-      if (p >= 1) {
-        clearInterval(handle);
-      }
-    };
-    const handle = setInterval(anim, 16);
-    camAnim.current = { handle, vx: 0, vy: 0, wx: 0, wy: 0, lastT: performance.now() };
-    return () => clearInterval(handle);
-  }, [tab, size, applyCamera]);
+    focusKeyRef.current = null;
+    const { w, h } = sizeRef.current;
+    const z = w < 500 ? .72 : .92;
+    cam.current = { tx: w / 2, ty: h / 2, z };
+    setZoom(z); applyCamera();
+  }, [applyCamera]);
+  useLayoutEffect(() => reset(), [tab, size.w, size.h, reset]);
 
   useEffect(() => () => stopCamAnim(), []);
 
@@ -334,16 +309,10 @@ export default function CollectionsView() {
     applyCamera();
   });
 
-  /** 墙面交互 → 收回左栏(与无限视图一致) */
-  const wallInteract = useCallback(() => {
-    const st = useStore.getState();
-    if (!st.chromeHovering && st.chromeLeft) st.setChromeLeft(false);
-  }, []);
-
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.isPrimary || !cards.length) return;
     stopCamAnim();
-    wallInteract();
+    setZoom(cam.current.z);
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch {
@@ -352,13 +321,13 @@ export default function CollectionsView() {
     const c = cam.current;
     dragRef.current = {
       x: e.clientX, y: e.clientY, tx: c.tx, ty: c.ty, moved: false,
-      lastT: performance.now(), vx: 0, vy: 0,
+      lastT: performance.now(), vx: 0, vy: 0, pointer: e.pointerId,
     };
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     const d = dragRef.current;
-    if (!d) return;
+    if (!d || d.pointer !== e.pointerId) return;
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
@@ -379,10 +348,10 @@ export default function CollectionsView() {
 
   const onPointerUp = (e: React.PointerEvent) => {
     const d = dragRef.current;
+    if (!d || d.pointer !== e.pointerId) return;
     dragRef.current = null;
-    if (!d) return;
     const stale = performance.now() - d.lastT > PAN_INERTIA.staleReleaseMs;
-    if (d.moved && !stale && Math.hypot(d.vx, d.vy) >= PAN_INERTIA.minSpeed) {
+    if (d.moved && !stale && !prefersReducedMotion() && Math.hypot(d.vx, d.vy) >= PAN_INERTIA.minSpeed) {
       const vx = Math.max(-PAN_INERTIA.maxSpeed, Math.min(PAN_INERTIA.maxSpeed, d.vx));
       const vy = Math.max(-PAN_INERTIA.maxSpeed, Math.min(PAN_INERTIA.maxSpeed, d.vy));
       if (!camAnim.current) startCamAnim();
@@ -406,31 +375,41 @@ export default function CollectionsView() {
     }
   };
 
-  const onWheel = (e: React.WheelEvent) => {
-    wallInteract();
-    if (e.ctrlKey || e.metaKey) {
+  const adjustZoom = useCallback((factor: number, x = sizeRef.current.w / 2, y = sizeRef.current.h / 2) => {
+    stopCamAnim();
+    const c = cam.current;
+    const z = Math.max(.5, Math.min(1.6, c.z * factor));
+    c.tx = x - (x - c.tx) * z / c.z; c.ty = y - (y - c.ty) * z / c.z; c.z = z;
+    setZoom(z); applyCamera();
+  }, [applyCamera]);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const wheel = (e: WheelEvent) => {
+      if (!cards.length) return;
       e.preventDefault();
-      const f = Math.exp(-e.deltaY * 0.0022);
-      cam.current.z = Math.min(1.6, Math.max(0.5, cam.current.z * f));
-      applyCamera();
-      return;
-    }
-    const dx = e.shiftKey ? e.deltaY : e.deltaX;
-    const dy = e.shiftKey ? e.deltaX : e.deltaY;
-    if (!camAnim.current) startCamAnim();
-    camAnim.current!.wx -= dx;
-    camAnim.current!.wy -= dy;
-  };
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
+      if (e.ctrlKey || e.metaKey) {
+        const rect = el.getBoundingClientRect();
+        adjustZoom(Math.exp(-e.deltaY * unit * .0022), e.clientX - rect.left, e.clientY - rect.top);
+      } else {
+        const dx = (e.shiftKey ? e.deltaY : e.deltaX) * unit;
+        const dy = (e.shiftKey ? e.deltaX : e.deltaY) * unit;
+        if (prefersReducedMotion()) { stopCamAnim(); cam.current.tx -= dx; cam.current.ty -= dy; applyCamera(); return; }
+        if (focusKeyRef.current) { stopCamAnim(); focusKeyRef.current = null; setZoom(cam.current.z); }
+        if (!camAnim.current) startCamAnim();
+        camAnim.current!.wx -= dx;
+        camAnim.current!.wy -= dy;
+      }
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
+  }, [adjustZoom, applyCamera, cards.length, startCamAnim]);
 
-  // Esc:聚焦态先取消聚焦回中(App 的 Esc 链先收侧栏,这里只在无侧栏时收聚焦)
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (e.key !== "Escape") return;
-      const st = useStore.getState();
-      if (st.lightboxId || st.chromeLeft) return;
-      if (focusKeyRef.current) {
+      if (e.key === "Escape" && !isShortcutScope(e) && focusKeyRef.current) {
+        e.preventDefault();
         focusKeyRef.current = null;
         focusCard(null);
       }
@@ -440,31 +419,18 @@ export default function CollectionsView() {
   }, [focusCard]);
 
   return (
-    <div className="relative flex-1 overflow-hidden bg-[#0c0d11] no-select">
-      {/* 背景光晕 */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(1200px 500px at 30% -10%, rgba(139,92,246,.13), transparent 60%), radial-gradient(900px 500px at 85% 110%, rgba(56,189,248,.08), transparent 60%)",
-        }}
-      />
-
-      {/* 顶部标题(悬浮,不随镜头动) */}
-      <div className="absolute left-4 top-4 z-20 flex items-center gap-3">
-        <h1 className="text-lg font-semibold text-neutral-100">分类</h1>
-        <div className="flex bg-panel2/85 backdrop-blur border border-border rounded-full p-0.5 text-xs">
+    <div className="canvas-shell canvas-collections no-select">
+      <div className="collection-header">
+        <div className="view-picker" role="group" aria-label="分类类型">
           {(
             [
-              ["folders", `文件夹 (${folders.length})`],
-              ["tags", `标签 (${tags.length})`],
+              ["folders", `文件夹 ${formatCount(folders.length)}`],
+              ["tags", `标签 ${formatCount(tags.length)}`],
             ] as const
           ).map(([k, label]) => (
             <button
               key={k}
-              className={`px-3 py-1 rounded-full transition-colors ${
-                tab === k ? "bg-violet-500/25 text-violet-200" : "text-neutral-400 hover:text-neutral-200"
-              }`}
+              aria-pressed={tab === k}
               onClick={() => setTab(k)}
             >
               {label}
@@ -472,30 +438,23 @@ export default function CollectionsView() {
           ))}
         </div>
         {tab === "folders" && (
-          <button className="btn text-xs" title="新建文件夹" onClick={newFolder}>
+          <button className="btn-secondary" title="新建文件夹" onClick={() => setCreating(true)}>
             <Plus size={13} /> 新建
           </button>
         )}
       </div>
 
-      {cards.length === 0 ? (
-        <div className="absolute inset-0 flex flex-col items-center justify-center text-neutral-500 gap-2">
-          {tab === "folders" ? <FolderIcon size={34} /> : <Tag size={34} />}
-          <div className="text-sm">{tab === "folders" ? "还没有文件夹" : "还没有标签"}</div>
-        </div>
-      ) : (
         <div
-          ref={attachContainer}
-          className="absolute inset-0 touch-none cursor-grab active:cursor-grabbing overflow-hidden"
+          ref={containerRef}
+          className="canvas-viewport"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-          onWheel={onWheel}
+          onLostPointerCapture={() => { dragRef.current = null; }}
         >
           <div ref={worldRef} className="absolute inset-0" style={{ transformOrigin: "0 0" }}>
             {placed.map(({ card: c, x, y }) => (
-              <div
+              <button type="button"
                 key={c.key}
                 data-card={c.key}
                 ref={(el) => {
@@ -512,7 +471,13 @@ export default function CollectionsView() {
                     list.push({ el, x: cx, y: cy });
                   }
                 }}
-                className="absolute text-left group"
+                className="absolute text-left group collection-card"
+                aria-label={`打开${c.kind === "folder" ? "文件夹" : "标签"} ${c.title}`}
+                onClick={(event) => {
+                  if (event.detail !== 0) return; // 鼠标/触摸由画布指针手势处理
+                  focusKeyRef.current = c.key;
+                  openCard(c);
+                }}
                 style={{
                   left: x,
                   top: y,
@@ -523,62 +488,52 @@ export default function CollectionsView() {
                 }}
               >
                 <div
-                  className="rounded-2xl overflow-hidden border border-white/10 bg-panel/95 backdrop-blur pointer-events-auto
-                             shadow-[0_20px_50px_rgba(0,0,0,.5)] transition-colors duration-200
-                             group-hover:border-violet-400/40 group-hover:shadow-[0_30px_70px_rgba(0,0,0,.65)]"
+                  className="collection-card-inner"
                 >
-                  <div className="h-[132px] relative overflow-hidden bg-[#181a20]">
+                  <div className="h-[132px] relative overflow-hidden bg-panel2">
                       {c.cover ? (
-                        <img
-                          src={thumbUrl(c.cover)}
-                          alt=""
-                          loading="lazy"
-                          draggable={false}
-                          className="w-full h-full object-cover opacity-85 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                        />
+                         <Thumb id={c.cover} kind="image" className="w-full h-full" />
                       ) : (
                         <div
                           className="w-full h-full flex items-center justify-center"
                           style={{
                             background:
                               c.kind === "tag"
-                                ? `linear-gradient(135deg, ${c.color}44, #1a1c22)`
-                                : "linear-gradient(135deg, #232630, #1a1c22)",
+                                 ? `linear-gradient(135deg, ${c.color ?? "#9b76ee"}44, #1e1928)`
+                                 : "linear-gradient(135deg, #3c3057, #211c30)",
                           }}
                         >
                           {c.kind === "tag" ? (
                             <Tag size={28} style={{ color: c.color ?? "#8b5cf6" }} />
                           ) : (
-                            <FolderIcon size={30} className="text-neutral-600" />
+                             <FolderIcon size={30} className="text-accent" />
                           )}
                         </div>
                       )}
-                      {/* 数量角标 */}
-                      <div className="absolute left-2 top-2 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur text-[10px] text-neutral-200 border border-white/10">
-                        {c.count}
-                      </div>
                     </div>
-                    <div className="px-3 py-2.5">
+                    <div className="px-3 py-2.5 flex items-center justify-between gap-2">
                       <div className="text-[13px] text-neutral-100 font-medium truncate flex items-center gap-1.5">
                         {c.kind === "tag" && <Tag size={12} style={{ color: c.color }} className="shrink-0" />}
                         <span className="truncate">{c.title}</span>
                       </div>
-                      <div className="text-[11px] text-neutral-500 mt-0.5">{c.sub}</div>
-                    </div>
-                  </div>
-                </div>
+                       <span className="text-[11px] text-muted shrink-0">{formatCount(c.count)} 项</span>
+                     </div>
+                   </div>
+                 </button>
               ))}
           </div>
         </div>
-      )}
-
-      {/* 底部提示 */}
-      <div className="absolute bottom-3 inset-x-0 h-10 flex items-center justify-center pointer-events-none">
-        <div className="bg-black/45 backdrop-blur border border-white/10 rounded-full px-3 py-1 text-[11px] text-neutral-400 flex items-center gap-1.5">
-          <ChevronLeft size={11} />
-          点击聚焦卡片 · 再点进入 · 拖拽漫游
-        </div>
-      </div>
+      {!cards.length && <div className="collection-empty">
+        <span className="state-icon">{tab === "folders" ? <FolderIcon size={27} /> : <Tag size={27} />}</span>
+        <h2>{tab === "folders" ? "还没有文件夹" : "还没有标签"}</h2>
+        <p>{tab === "folders" ? "用文件夹把相关的素材整理在一起。" : "为素材添加标签后，就能从这里浏览。"}</p>
+        {tab === "folders" && <button className="btn-primary" onClick={() => setCreating(true)}><Plus size={16} /> 创建文件夹</button>}
+      </div>}
+      {cards.length > 0 && <>
+        <p className="canvas-tip"><Move size={14} /><span className="canvas-help-full">点击聚焦 · 再点进入 · 拖动平移</span><span className="canvas-help-short">点击浏览</span></p>
+        <CanvasControls zoom={zoom} min={.5} max={1.6} onZoom={adjustZoom} onReset={reset} />
+      </>}
+      {creating && <NameDialog title="新建文件夹" onSave={newFolder} onClose={() => setCreating(false)} />}
     </div>
   );
 }
