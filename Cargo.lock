@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "lilium-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "lilium-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2636,7 +2636,7 @@ dependencies = [
 
 [[package]]
 name = "lilium-tauri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lilium-core",
  "lilium-server",
