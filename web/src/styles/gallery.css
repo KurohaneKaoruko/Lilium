@@ -1,5 +1,5 @@
-.gallery-scroll { min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding-top: 4px; scrollbar-gutter: stable; }
-.gallery-inner { position: relative; width: calc(100% - 2 * var(--workspace-gutter)); max-width: 1760px; margin: 0 auto; }
+.gallery-scroll { min-height: 0; flex: 1; overflow: hidden auto; overscroll-behavior: contain; padding-top: 2px; scrollbar-gutter: stable; }
+.gallery-inner { position: relative; width: calc(100% - 2 * var(--gallery-inset)); margin: 0 auto; }
 .gallery-pagination { min-height: 12px; margin: 10px auto; display: flex; justify-content: center; color: var(--color-muted); font-size: 12px; }
 .gallery-pagination > span { display: flex; align-items: center; gap: 6px; }
 

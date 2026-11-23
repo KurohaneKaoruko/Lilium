@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Bookmark, ChevronDown, ChevronRight, CloudOff, Folder, Images, LibraryBig, ListChecks, LoaderCircle, Plus, RefreshCw, ScanLine, SearchX, SlidersHorizontal, Trash2, WandSparkles, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Bookmark, ChevronDown, ChevronLeft, ChevronRight, CloudOff, Folder, Images, ListChecks, LoaderCircle, Plus, RefreshCw, ScanLine, SearchX, SlidersHorizontal, Trash2, WandSparkles, X } from "lucide-react";
 import { THUMBNAIL_DEFAULT, THUMBNAIL_MAX, THUMBNAIL_MIN, useStore, type Filters, type SortKey, type ViewMode } from "../store/useStore";
 import { advancedFilterCount, formatCount, KINDS, SORTS, VIEWS } from "../lib/workspace";
 import FiltersPanel from "./FiltersPanel";
@@ -62,32 +62,25 @@ export default function Workspace() {
 
   return (
     <main className="workspace" id="workspace" tabIndex={-1} aria-labelledby="workspace-title">
-      <div className="workspace-header">
-        <nav className="breadcrumbs" aria-label="当前位置">
-          {scoped || similar || collections ? <button type="button" onClick={() => {
-            if (collections) useStore.getState().setView("infinite");
-            if (similar) exitSimilar(); else resetFilters();
-          }}><LibraryBig size={14} /> 素材库</button> : <span><LibraryBig size={14} /> 素材库</span>}
-          <ChevronRight size={12} aria-hidden="true" />
-          <span aria-current="page" className="truncate">{title}</span>
-        </nav>
+      <div className="workspace-head">
         <div className="workspace-heading">
-          <h1 id="workspace-title" title={title}>{title}</h1>
+          {(scoped || similar || collections) && <button type="button" className="breadcrumb-back" title="返回素材库" aria-label="返回素材库"
+            onClick={() => {
+              if (collections) useStore.getState().setView("infinite");
+              if (similar) exitSimilar(); else resetFilters();
+            }}><ChevronLeft size={15} /><span>素材库</span></button>}
+          <h1 id="workspace-title" title={hint}>{title}</h1>
           {!collections && !error && <span className="count-badge">{loading ? "更新中" : `${formatCount(total)} 项`}</span>}
-          {!collections && (similar || visibleCount > 0 || selectionMode) && <div className="workspace-heading-actions">
-            {similar && <button type="button" className="btn return-button" aria-label="退出相似搜索" title="退出相似搜索" onClick={exitSimilar}>
-              <X size={14} /><span>退出相似搜索</span></button>}
-            {(visibleCount > 0 || selectionMode) && <button type="button" className="btn-secondary selection-toggle" disabled={!selectionMode && loading}
-              aria-pressed={selectionMode} aria-label="多选素材" title={selectionMode ? "退出多选" : "开启多选"}
-              onClick={() => setSelectionMode(!selectionMode)}><ListChecks size={17} /><span>多选</span></button>}
-          </div>}
         </div>
-        <p className="workspace-hint">{hint}</p>
-      </div>
-
-      <div className="workspace-toolbar">
-        <ViewPicker view={view} />
-        {!collections && <BrowseControls menu={menu} setMenu={setMenu} />}
+        <div className="workspace-controls">
+          {similar && <button type="button" className="btn return-button" title="退出相似搜索" aria-label="退出相似搜索" onClick={exitSimilar}>
+            <X size={14} /><span>退出相似</span></button>}
+          {!collections && <ViewPicker view={view} />}
+          {!collections && <BrowseControls menu={menu} setMenu={setMenu} />}
+          {!collections && (visibleCount > 0 || selectionMode) && <button type="button" className="btn-secondary selection-toggle" disabled={!selectionMode && loading}
+            aria-pressed={selectionMode} aria-label={selectionMode ? "退出多选" : "多选素材"} title={selectionMode ? "退出多选" : "开启多选"}
+            onClick={() => setSelectionMode(!selectionMode)}><ListChecks size={16} /><span>{selectionMode ? "完成" : "多选"}</span></button>}
+        </div>
       </div>
       {!collections && !similar && chips.length > 0 && (
         <div className="filter-chips" aria-label="当前筛选条件">

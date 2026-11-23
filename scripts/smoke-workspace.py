@@ -45,7 +45,7 @@ def wait_until_ready(server, url):
 
 def check_no_overflow(page):
     assert page.evaluate("document.documentElement.scrollWidth === innerWidth"), "document overflows viewport"
-    assert page.locator(".workspace-toolbar").evaluate("el => el.scrollWidth <= el.clientWidth"), "toolbar overflows"
+    assert page.locator(".workspace-controls").evaluate("el => el.scrollWidth <= el.clientWidth"), "toolbar overflows"
 
 
 def exercise(browser, url, screenshots):
@@ -62,6 +62,17 @@ def exercise(browser, url, screenshots):
     check_no_overflow(desktop)
     capture(desktop, "empty-desktop")
 
+    desktop.get_by_role("button", name="导入素材").click()
+    import_menu = desktop.get_by_role("dialog", name="导入方式")
+    expect(import_menu).to_be_visible()
+    assert import_menu.get_by_role("button", name="从文件夹导入…").count() == 1
+    import_menu.get_by_role("button", name="从文件夹导入…").click()
+    import_dialog = desktop.get_by_role("dialog", name="磁盘导入")
+    expect(import_dialog).to_be_visible()
+    assert import_dialog.get_by_role("button", name="选择文件夹…").count() == 0, "web build must hide native folder picker"
+    expect(import_dialog.get_by_text(re.compile("浏览器无法直接读取本机目录"))).to_be_visible()
+    import_dialog.get_by_role("button", name="关闭弹窗").click()
+    expect(import_dialog).not_to_be_visible()
     desktop.get_by_role("button", name="导入素材").click()
     with desktop.expect_file_chooser() as picker:
         desktop.get_by_role("button", name="选择文件…").click()
@@ -300,7 +311,7 @@ def exercise(browser, url, screenshots):
     nav.get_by_role("button", name="回收站", exact=True).click()
     expect(nav).not_to_be_visible()
     expect(mobile.get_by_role("heading", name="回收站是空的")).to_be_visible()
-    mobile.get_by_role("button", name="素材库", exact=True).click()
+    mobile.get_by_role("button", name="返回素材库", exact=True).click()
     mobile.get_by_role("button", name="网格", exact=True).click()
     expect(mobile.locator(".grid-asset")).to_have_count(3)
     check_no_overflow(mobile)
@@ -319,6 +330,8 @@ def exercise(browser, url, screenshots):
     expect(mobile.get_by_role("dialog", name="素材详情")).not_to_be_visible()
     mobile.set_viewport_size({"width": 320, "height": 640})
     check_no_overflow(mobile)
+    assert mobile.locator(".workspace-heading h1").evaluate("el => el.scrollWidth <= el.clientWidth"), "heading is clipped"
+    assert mobile.locator(".workspace-controls").evaluate("el => el.scrollWidth <= el.clientWidth"), "controls overflow at 320px"
 
     mobile.get_by_role("button", name="更多工具").tap()
     mobile.get_by_role("dialog", name="更多工具").get_by_role("button", name=re.compile("打开命令面板")).tap()
@@ -329,7 +342,7 @@ def exercise(browser, url, screenshots):
     mobile_palette.get_by_role("button", name="关闭命令面板").tap()
 
     mobile.get_by_role("button", name="取消选择").tap()
-    select_mode = mobile.get_by_role("button", name="多选素材")
+    select_mode = mobile.locator(".selection-toggle")
     select_mode.tap()
     expect(select_mode).to_have_attribute("aria-pressed", "true")
     expect(mobile.get_by_text("点按素材以选择")).to_be_visible()

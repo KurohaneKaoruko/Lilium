@@ -80,6 +80,9 @@
 .dialog-icon { flex: none; width: 33px; height: 33px; display: grid; place-items: center; color: var(--color-accent); background: #332744; border: 1px solid #49375f; border-radius: 8px; }
 .dialog-content { padding: 16px; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .dialog-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; flex-wrap: wrap; }
+.path-pickers { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: -4px; }
+.path-pickers .btn-secondary { min-height: 32px; font-size: 12px; }
+.path-picker-note { color: var(--color-subtle); font-size: 11px; }
 .shortcut-list { display: grid; gap: 2px; }
 .shortcut-list > div { display: grid; grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); gap: 12px; align-items: center; min-height: 41px; border-bottom: 1px solid var(--line-soft); padding: 6px 3px; color: var(--color-muted); font-size: 13px; }
 .shortcut-list > div:last-child { border-bottom: 0; }

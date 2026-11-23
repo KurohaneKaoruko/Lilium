@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { AlertTriangle, Check, FolderInput, FolderPlus, Layers2, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, FolderInput, FolderOpen, FolderPlus, Layers2, LoaderCircle, RefreshCw, Trash2, X } from "lucide-react";
 import { api, humanSize } from "../api/client";
-import { notify } from "../lib/feedback";
+import { notify, reportError } from "../lib/feedback";
 import { formatCount } from "../lib/workspace";
+import { isDesktopApp, pickDirectory } from "../lib/nativeDialog";
 import { useStore } from "../store/useStore";
 import Popover from "./ui/Popover";
 
@@ -17,7 +18,25 @@ export default function LibraryPanel({ anchorRef, onClose }: { anchorRef: RefObj
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [error, setError] = useState("");
+  const [picking, setPicking] = useState(false);
   const pathRef = useRef<HTMLInputElement>(null);
+  const desktop = isDesktopApp();
+
+  const pickPath = async () => {
+    if (picking || !mode) return;
+    setPicking(true);
+    try {
+      const picked = await pickDirectory(mode === "create" ? "选择新资源库的存放位置" : "选择资源库文件夹");
+      if (picked) {
+        setPath(picked);
+        if (mode === "create" && !name.trim()) setName(picked.split(/[\\/]/).filter(Boolean).pop() ?? "");
+      }
+    } catch (e) {
+      reportError("无法打开系统选择器", e);
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const reload = () => api<{ libraries: LibEntry[] }>("/libraries").then((data) => setLibs(data.libraries));
   const setFailure = (error: unknown) => setError(error instanceof Error ? error.message : String(error));
@@ -80,7 +99,12 @@ export default function LibraryPanel({ anchorRef, onClose }: { anchorRef: RefObj
       if (mode === "create") void create(); else void switchTo(path.trim());
     }}>
       <label className="field-label">{mode === "create" ? "存放位置（父文件夹）" : "资源库路径"}
-        <input className="input w-full" ref={pathRef} value={path} onChange={(e) => setPath(e.target.value)} placeholder="服务端可访问的绝对路径" required /></label>
+        <input className="input w-full" ref={pathRef} value={path} onChange={(e) => setPath(e.target.value)} placeholder={desktop ? "点击下方选择，或输入绝对路径" : "服务端可访问的绝对路径"} required /></label>
+      {desktop && <div className="path-pickers">
+        <button type="button" className="btn-secondary" disabled={disabled || picking} onClick={() => void pickPath()}>
+          <FolderOpen size={15} />选择文件夹…</button>
+        <span className="path-picker-note">使用系统选择器</span>
+      </div>}
       {mode === "create" && <label className="field-label">库名称<input className="input w-full" value={name} onChange={(e) => setName(e.target.value)} required /></label>}
       <div className="dialog-actions"><button className="btn" type="button" disabled={disabled} onClick={() => setMode(null)}>取消</button>
         <button className="btn-primary" disabled={disabled || !path.trim() || (mode === "create" && !name.trim())}>{busy ? "处理中…" : mode === "create" ? "创建并切换" : "打开资源库"}</button></div>

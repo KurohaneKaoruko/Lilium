@@ -1,8 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Ellipsis, Eye, PanelRightOpen, Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil, Link2, FolderOpen, Plus, Save, X } from "lucide-react";
+import { Ellipsis, Eye, PanelRightOpen, Tags, Star, Trash2, RotateCcw, Search, Wand2, HardDrive, Keyboard, Settings as SettingsIcon, Pencil, Link2, FolderOpen, FileUp, Plus, Save, X } from "lucide-react";
 import { useStore } from "../../store/useStore";
 import { api, humanSize } from "../../api/client";
 import { notify, reportError } from "../../lib/feedback";
+import { appendPaths, isDesktopApp, pickDirectory, pickFilePaths } from "../../lib/nativeDialog";
 import { formatCount, shortcutMod } from "../../lib/workspace";
 import { Thumb } from "../views/shared";
 import { Modal } from "../ui/Dialog";
@@ -142,8 +143,10 @@ export function ImportPathModal({
 }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
   const inputId = useId();
+  const desktop = isDesktopApp();
   const refreshMeta = useStore((s) => s.refreshMeta);
   const fetchItems = useStore((s) => s.fetchItems);
   const folderId = useStore((s) => s.filters.folderId);
@@ -159,18 +162,40 @@ export function ImportPathModal({
     disk: {
       title: "磁盘导入",
       icon: <HardDrive size={14} />,
-      placeholder: "/home/user/Pictures/photos 或 /a.png, /b/c.zip",
-      hint: "导入发生在服务端进程内：浏览器安全限制不允许直接读取本机目录，因此需要填写服务器（或桌面版本机）可以访问的绝对路径，可逗号分隔多个。",
+      placeholder: "选择文件夹，或填写服务器可访问的绝对路径",
+      hint: desktop
+        ? "点击下方按钮从系统选择文件夹或文件，也可以直接粘贴路径，支持用逗号或换行分隔多个。"
+        : "导入发生在服务端进程内：浏览器无法直接读取本机目录，请填写服务器可访问的绝对路径，多个路径用逗号或换行分隔。",
       inputLabel: "路径（可逗号分隔）",
     },
     library: {
       title: "库迁移导入",
       icon: <FolderOpen size={14} />,
-      placeholder: "/home/user/Pictures/Design.library",
-      hint: "把现有图片管理软件的库目录迁移进来：完整保留文件夹树、标签（含颜色）、评分、注释、调色板等；同样需要服务器本机可见的绝对路径，可重复执行以增量导入。",
+      placeholder: "选择 .library 资源库文件夹，或填写绝对路径",
+      hint: desktop
+        ? "把现有图片管理软件的库目录迁移进来：完整保留文件夹树、标签（含颜色）、评分、注释、调色板等。点击下方按钮直接选择 .library 文件夹即可。"
+        : "把现有图片管理软件的库目录迁移进来：完整保留文件夹树、标签（含颜色）、评分、注释、调色板等；需要填写服务器可访问的绝对路径，可重复执行以增量导入。",
       inputLabel: "库目录路径",
     },
   }[mode];
+
+  const pick = async (kind: "folder" | "files") => {
+    if (picking) return;
+    setPicking(true);
+    try {
+      if (kind === "folder") {
+        const path = await pickDirectory(mode === "library" ? "选择要迁移的资源库文件夹" : "选择要导入的文件夹");
+        if (path) setText((current) => appendPaths(current, path));
+      } else {
+        const paths = await pickFilePaths("选择要导入的文件");
+        if (paths.length) setText((current) => appendPaths(current, paths));
+      }
+    } catch (e) {
+      reportError("无法打开系统选择器", e);
+    } finally {
+      setPicking(false);
+    }
+  };
 
   const submit = async () => {
     const v = text.trim();
@@ -217,6 +242,17 @@ export function ImportPathModal({
           <input id={inputId} data-dialog-focus className="input w-full" placeholder={meta.placeholder} value={text}
             onChange={(e) => setText(e.target.value)} disabled={busy} />
         </label>
+        {desktop && mode !== "url" && (
+          <div className="path-pickers">
+            <button type="button" className="btn-secondary" disabled={busy || picking} onClick={() => void pick("folder")}>
+              <FolderOpen size={15} />{mode === "library" ? "选择库文件夹…" : "选择文件夹…"}
+            </button>
+            {mode === "disk" && <button type="button" className="btn-secondary" disabled={busy || picking} onClick={() => void pick("files")}>
+              <FileUp size={15} />选择文件…
+            </button>}
+            <span className="path-picker-note">使用系统选择器</span>
+          </div>
+        )}
         {result && (
           <div role={result.ok ? "status" : "alert"} className={`text-xs px-3 py-2 rounded-lg border break-words ${result.ok ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10" : "text-red-300 border-red-500/30 bg-red-500/10"}`}>
             {result.ok ? "✓ " : "✗ "}{result.text}

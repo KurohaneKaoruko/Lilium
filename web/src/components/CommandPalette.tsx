@@ -43,7 +43,7 @@ export default function CommandPalette({ onClose, onTool, onImport }: {
     ...VIEWS.map(({ key, label, icon }, index) => ({ id: `view-${key}`, label: `切换到${label}`, hint: key === view ? "正在使用此视图" : "更改素材排列方式",
       keywords: `${key} view`, icon, current: key === view, shortcut: String(index + 1), run: () => useStore.getState().setView(key) })),
     { id: "import-url", label: "从链接导入", hint: "通过 URL 添加素材", keywords: "import url link", icon: Link2, disabled: importing, run: () => onImport("url") },
-    { id: "import-path", label: "从磁盘路径导入", hint: "从服务端可访问的目录或文件导入", keywords: "import path disk", icon: HardDrive, disabled: importing, run: () => onImport("disk") },
+    { id: "import-path", label: "从文件夹导入", hint: "选择文件夹或填写服务端路径", keywords: "import path disk folder", icon: HardDrive, disabled: importing, run: () => onImport("disk") },
     { id: "import-library", label: "迁移现有资源库", hint: "导入 Eagle 资源库", keywords: "import library eagle", icon: FolderInput, disabled: importing, run: () => onImport("library") },
     { id: "refresh", label: "刷新资源库", hint: loading ? "正在更新…" : "重新载入素材和分类", keywords: "refresh reload", icon: RefreshCw, disabled: loading, run: () => {
       const store = useStore.getState();

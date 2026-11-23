@@ -116,7 +116,7 @@ export default function TopBar({ sidebarOpen, toggleSidebar, onTool, onImport, o
             <p className="menu-caption">添加到素材库</p>
             <button className="menu-row" onClick={() => { importTrigger.current?.focus(); close(); uploadRef.current?.click(); }}><FileUp size={16} />选择文件…</button>
             <button className="menu-row" onClick={() => importFrom("url")}><Link2 size={16} />从链接导入…</button>
-            <button className="menu-row" onClick={() => importFrom("disk")}><HardDrive size={16} />从磁盘路径导入…</button>
+            <button className="menu-row" onClick={() => importFrom("disk")}><HardDrive size={16} />从文件夹导入…</button>
             <button className="menu-row" onClick={() => importFrom("library")}><FolderInput size={16} />迁移现有资源库…</button>
           </Popover>
         )}
